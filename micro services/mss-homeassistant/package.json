@@ -1,0 +1,26 @@
+{
+  "name": "micro-service-home-assistant",
+  "version": "1.0.0",
+  "private": true,
+  "main": "dist/index.js",
+  "scripts": {
+    "nodemon": "nodemon --watch src --ext ts --exec \"ts-node src/index.ts\"",
+    "dev": "nodemon --watch src --ext ts --exec \"ts-node src/index.ts\"",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "docker:build": "yarn build && docker build -t micro-service-home-assistant:latest .",
+    "docker:run": "docker run -d --name micro-service-home-assistant --restart unless-stopped --env-file .env -p 3223:3223 micro-service-home-assistant:latest"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.14.15",
+    "nodemon": "^3.1.4",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.4"
+  },
+  "packageManager": "yarn@4.12.0+sha512.f45ab632439a67f8bc759bf32ead036a1f413287b9042726b7cc4818b7b49e14e9423ba49b18f9e06ea4941c1ad062385b1d8760a8d5091a1a31e5f6219afca8"
+}

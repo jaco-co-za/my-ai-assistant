@@ -1,0 +1,22 @@
+{
+  "name": "weather_summary",
+  "version": 1,
+  "instructions": [
+    "Summarize the current weather from these entities in one short, human-readable sentence.",
+    "Prefer temperature, conditions, humidity, wind, and precipitation if available.",
+    "If multiple entities overlap, combine them without listing raw entity ids.",
+    "Request:",
+    "{{payload}}",
+    "Entities:",
+    "{{entitiesSummary}}",
+    "Return ONLY JSON with a field message: string."
+  ],
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "message": { "type": "string" }
+    },
+    "required": ["message"],
+    "additionalProperties": false
+  }
+}

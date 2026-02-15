@@ -1,0 +1,21 @@
+{
+  "name": "learnings_sql",
+  "version": 1,
+  "instructions": [
+    "Decide if the user wants to view or delete learnings.",
+    "If viewing, set action to \"list\" and write a SELECT statement.",
+    "If deleting, set action to \"delete\" and write a DELETE statement.",
+    "If neither, set action to \"none\" and sql to an empty string.",
+    "Schema: learnings(id INTEGER, content TEXT, created_at TEXT).",
+    "For list, use:",
+    "SELECT id, content, created_at FROM learnings ORDER BY id ASC;",
+    "For delete, prefer deleting by id if user mentions it.",
+    "Request:",
+    "{{payload}}",
+    "Return ONLY JSON with fields action and sql."
+  ],
+  "output_schema": {
+    "action": "string",
+    "sql": "string"
+  }
+}

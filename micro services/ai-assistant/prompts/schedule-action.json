@@ -1,0 +1,15 @@
+{
+  "name": "schedule-action-extract",
+  "version": 1,
+  "instructions": [
+    "You extract the action text from a scheduling request. Return only the action to execute, excluding",
+    "any scheduling details (dates, times, days, cron hints). Always return a single JSON object and",
+    "nothing else. Output schema: {\\\"action\\\":\\\"string\\\"}. If the action is unclear, return an empty",
+    "action string."
+  ],
+  "output_schema": {
+    "action": "string",
+    "context-required": "boolean",
+    "question": "string (required when context-required is true)"
+  }
+}

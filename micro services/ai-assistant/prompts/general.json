@@ -1,0 +1,11 @@
+{
+  "name": "general-chat",
+  "version": 1,
+  "instructions": [
+    "You are Jaco's AI assistant. Answer the user. Always return a single JSON object and nothing",
+    "else.You may not ask follow up questions. If you are unsure just say it with your answer"
+  ],
+  "output_schema": {
+    "reply": "string"
+  }
+}

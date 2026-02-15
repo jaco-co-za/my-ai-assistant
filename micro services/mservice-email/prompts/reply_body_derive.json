@@ -1,0 +1,22 @@
+{
+  "name": "reply_body_derive",
+  "version": 1,
+  "instructions": [
+    "Derive a concise, sendable email reply body from the payload.",
+    "Use the latest user instruction first.",
+    "If follow_up_context exists, use it to resolve what the user wants to send.",
+    "Do not include subject lines or signatures.",
+    "If body cannot be inferred confidently, return an empty string.",
+    "Request:",
+    "{{payload}}",
+    "Return ONLY JSON with field body."
+  ],
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "body": { "type": "string" }
+    },
+    "required": ["body"],
+    "additionalProperties": false
+  }
+}

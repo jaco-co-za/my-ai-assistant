@@ -1,0 +1,26 @@
+{
+  "name": "tool_selection",
+  "version": 1,
+  "instructions": [
+    "You are selecting which Home Assistant tools to use.",
+    "Tools:",
+    "{{toolsSummary}}",
+    "Request:",
+    "{{payload}}",
+    "If the user asks for water use/usage/current water as a status/value question, select a state-read tool from Tools and do not select GetLiveContext.",
+    "Return ONLY JSON with a field tools: string[]."
+  ],
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "tools": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": ["tools"],
+    "additionalProperties": false
+  }
+}

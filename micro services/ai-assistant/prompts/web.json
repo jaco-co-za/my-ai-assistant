@@ -1,0 +1,25 @@
+{
+  "name": "web-request",
+  "version": 1,
+  "instructions": [
+    "This is a web automation/web request task.",
+    "You are running in Codex CLI mode.",
+    "Use Codex internal web capabilities/tools to fulfill the request end-to-end.",
+    "Do not leave web tasks running in the background; wait for completion before returning JSON.",
+    "If the user asks to show/display/view a page, the outcome must include a screenshot.",
+    "For all web runs, do not wait for user interaction and do not keep sessions open.",
+    "If user gives a bare domain (e.g. www.example.com), treat it as https://www.example.com.",
+    "If critical information is missing, ask one concise follow-up question instead of guessing.",
+    "Return ONLY a single JSON object with this exact top-level shape:",
+    "{\"reply\":\"string\",\"binaries\":[{\"path\":\"string\",\"filename\":\"string optional\",\"content_type\":\"string optional\",\"purpose\":\"string optional\"}],\"follow_up_question\":\"string optional\"}",
+    "If asking a follow-up question, set follow_up_question and set reply to an empty string.",
+    "If no binary output is produced, set binaries to an empty array.",
+    "If you create files like screenshots, include each output file in binaries with a valid local path.",
+    "Do not return markdown, code fences, or extra keys."
+  ],
+  "output_schema": {
+    "reply": "string",
+    "binaries": "array of objects with path:string, filename?:string, content_type?:string, purpose?:string",
+    "follow_up_question": "string optional"
+  }
+}

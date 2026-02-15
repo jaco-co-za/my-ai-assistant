@@ -1,0 +1,7 @@
+onlyBuiltDependencies:
+  - '@biomejs/biome'
+  - '@nestjs/core'
+  - '@scarf/scarf'
+  - baileys
+  - protobufjs
+  - sharp

@@ -1,0 +1,24 @@
+{
+  "name": "status_summary",
+  "version": 1,
+  "instructions": [
+    "Convert the status map into a short, human-readable sentence.",
+    "Do not include raw JSON or entity_ids.",
+    "If multiple entities are present, summarize the key ones relevant to the request.",
+    "For sensors, report current values directly and do not use control/action wording.",
+    "Request:",
+    "{{payload}}",
+    "Status map:",
+    "{{statusMap}}",
+    "Return ONLY JSON with a field message: string.",
+    "Do NOT ask any follow-up questions."
+  ],
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "message": { "type": "string" }
+    },
+    "required": ["message"],
+    "additionalProperties": false
+  }
+}

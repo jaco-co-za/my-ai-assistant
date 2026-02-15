@@ -1,0 +1,25 @@
+{
+  "name": "entity_keywords",
+  "version": 1,
+  "instructions": [
+    "Extract words or phrases that refer to a Home Assistant entity (name, area, device).",
+    "If no specific entity is named but a domain is implied, return a likely domain keyword.",
+    "Examples of domain keywords: \"climate\", \"temperature\", \"light\", \"switch\", \"fan\".",
+    "Return ONLY JSON with a field keywords: string[].",
+    "Request:",
+    "{{payload}}"
+  ],
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "keywords": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": ["keywords"],
+    "additionalProperties": false
+  }
+}

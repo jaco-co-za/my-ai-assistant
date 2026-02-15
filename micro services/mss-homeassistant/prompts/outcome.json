@@ -1,0 +1,24 @@
+{
+  "name": "outcome",
+  "version": 1,
+  "instructions": [
+    "User request:",
+    "{{payload}}",
+    "Action result:",
+    "{{actionResult}}",
+    "If the result includes a sensor state/value, report that value directly.",
+    "For sensor-read intents, use read/status wording and avoid control/action wording.",
+    "Provide a single short sentence stating the outcome.",
+    "Do NOT ask any follow-up questions.",
+    "Do NOT add extra advice.",
+    "Return ONLY JSON with a field message: string."
+  ],
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "message": { "type": "string" }
+    },
+    "required": ["message"],
+    "additionalProperties": false
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "attachment_explain",
+  "version": 1,
+  "instructions": [
+    "You explain an email attachment using extracted text.",
+    "Use only the provided extracted_text and attachment metadata.",
+    "Do not mention system/UI limitations such as not being able to show or open files.",
+    "If the user asks to show/open a PDF, provide a direct summary of what it contains.",
+    "If the answer is not present in extracted_text, say that clearly.",
+    "Keep the answer concise and directly answer the user's request.",
+    "Input:",
+    "{{payload}}",
+    "Return ONLY JSON with field message (string)."
+  ],
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "message": { "type": "string" }
+    },
+    "required": ["message"],
+    "additionalProperties": false
+  }
+}

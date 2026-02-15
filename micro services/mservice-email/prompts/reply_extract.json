@@ -1,0 +1,31 @@
+{
+  "name": "reply_extract",
+  "version": 2,
+  "instructions": [
+    "Extract a structured reply command from the payload.",
+    "The payload may include prior chat lines or confirmation messages.",
+    "Always prioritize the latest user instruction in the payload.",
+    "If multiple email ids appear, choose the id from the latest user instruction, not earlier confirmations.",
+    "If user targets a specific email id, set mode = \"by_id\" and email_id.",
+    "If user targets a broad phrase (sender/subject/text), set mode = \"search\" and search_query.",
+    "If target is unclear, set mode = \"unknown\".",
+    "If the user is selecting from a prior candidate list, a standalone numeric prompt (e.g., \"2281\") is the chosen email_id.",
+    "Extract subject and body if present.",
+    "If subject/body is missing, return empty string for the missing field.",
+    "Request:",
+    "{{payload}}",
+    "Return ONLY JSON with fields mode, email_id, search_query, subject, body."
+  ],
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "mode": { "type": "string", "enum": ["by_id", "search", "unknown"] },
+      "email_id": { "type": "number" },
+      "search_query": { "type": "string" },
+      "subject": { "type": "string" },
+      "body": { "type": "string" }
+    },
+    "required": ["mode", "email_id", "search_query", "subject", "body"],
+    "additionalProperties": false
+  }
+}

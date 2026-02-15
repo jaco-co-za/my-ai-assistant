@@ -1,0 +1,14 @@
+{
+  "name": "cron-remove",
+  "version": 1,
+  "instructions": [
+    "You generate SQLite DELETE query/queries to remove cron jobs based on the user's request. Always",
+    "return a single JSON object and nothing else. Output schema: {\\\"sql\\\":\\\"DELETE ...\\\"}. Use only the",
+    "provided tables and columns. If the user says 'all', delete from crons and cron_runs. If the user",
+    "provides an id, delete that cron and its cron_runs. You may return two DELETE statements separated",
+    "by a semicolon."
+  ],
+  "output_schema": {
+    "sql": "string"
+  }
+}

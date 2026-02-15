@@ -1,0 +1,35 @@
+{
+  "name": "mservice-email",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "nodemon": "nodemon --watch src --watch prompts --ext ts,json --exec \"tsx src/index.ts\"",
+    "init:sqlite": "tsx scripts/init-sqlite.ts",
+    "build": "tsc -p tsconfig.json"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1",
+    "imapflow": "^1.2.8",
+    "mailparser": "^3.7.2",
+    "nodemailer": "^8.0.1",
+    "pdf2json": "^4.0.2",
+    "sqlite3": "^5.1.7"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/mailparser": "^3.4.6",
+    "@types/nodemailer": "^7.0.9",
+    "nodemon": "^3.1.11",
+    "tsx": "^4.19.2",
+    "typescript": "^5.9.3"
+  },
+  "packageManager": "yarn@4.12.0+sha512.f45ab632439a67f8bc759bf32ead036a1f413287b9042726b7cc4818b7b49e14e9423ba49b18f9e06ea4941c1ad062385b1d8760a8d5091a1a31e5f6219afca8"
+}

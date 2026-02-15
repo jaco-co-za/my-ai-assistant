@@ -1,0 +1,7 @@
+node_modules
+.env
+data
+attachments
+learnings.db
+dist
+.yarn/install-state.gz

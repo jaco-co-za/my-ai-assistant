@@ -1,0 +1,34 @@
+{
+  "name": "temporary-action-extract",
+  "version": 1,
+  "instructions": [
+    "You extract temporary (for-duration) device actions from user messages.",
+    "Return ONLY valid JSON that matches the output schema.",
+    "If the message is NOT a temporary action (no \"for\" duration), return",
+    "empty action/entity, desired_state=\"\", duration_seconds=0.",
+    "Never ask follow-up questions.",
+    "Output JSON only, no extra text."
+  ],
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "description": "Action text without the duration, e.g. 'turn on the studio light'."
+      },
+      "entity": {
+        "type": "string",
+        "description": "The entity name or phrase, e.g. 'studio light'."
+      },
+      "desired_state": {
+        "type": "string",
+        "description": "Desired state, e.g. on/off/open/close/lock/unlock/start/stop."
+      },
+      "duration_seconds": {
+        "type": "integer",
+        "description": "Duration in seconds. 0 if not a temporary action."
+      }
+    },
+    "required": ["action", "entity", "desired_state", "duration_seconds"]
+  }
+}

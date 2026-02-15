@@ -1,0 +1,21 @@
+{
+  "name": "learnings_extract",
+  "version": 1,
+  "instructions": [
+    "Decide if the user is trying to teach you a new fact or preference to remember.",
+    "If yes, extract a concise learning statement in the user's words.",
+    "If not, set should_learn to false and leave learning empty.",
+    "Request:",
+    "{{payload}}",
+    "Return ONLY JSON with fields should_learn (boolean) and learning (string)."
+  ],
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "should_learn": { "type": "boolean" },
+      "learning": { "type": "string" }
+    },
+    "required": ["should_learn", "learning"],
+    "additionalProperties": false
+  }
+}

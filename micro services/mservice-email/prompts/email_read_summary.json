@@ -1,0 +1,95 @@
+{
+  "name": "email_read_summary",
+  "version": 3,
+  "instructions": [
+    "You are returning email-viewer data for a UI.",
+    "Return ONLY valid JSON. No markdown, no prose, no code fences.",
+    "Schema:",
+    "{",
+    "\"email_id\": \"string\",",
+    "\"from\": \"string\",",
+    "\"to\": \"string\",",
+    "\"cc\": [\"string\"],",
+    "\"bcc\": [\"string\"],",
+    "\"subject\": \"string\",",
+    "\"received_at\": \"YYYY/MM/DD HHhmm\",",
+    "\"folder\": \"string\",",
+    "\"subfolder\": \"string\",",
+    "\"body_text\": \"string\",",
+    "\"body_html\": \"string\",",
+    "\"ai_summary\": \"string\",",
+    "\"attachments\": [",
+    "{",
+    "\"id\": \"string\",",
+    "\"name\": \"string\",",
+    "\"mime_type\": \"string\",",
+    "\"size_bytes\": 0",
+    "}",
+    "]",
+    "}",
+    "Rules:",
+    "Populate each field explicitly. Use empty string \"\" or empty array [] if unknown.",
+    "ai_summary must contain summary text only. Do not include Body:, ID:, From:, Subject:, attachment lists, or any metadata labels.",
+    "body_html must be the original email HTML from storage/source (not generated).",
+    "body_text must be plain text extracted from the original email body.",
+    "Do not concatenate fields into one block.",
+    "Do not include additional keys.",
+    "Ensure JSON is parseable as-is.",
+    "Payload:",
+    "{{payload}}",
+    "Return ONLY JSON that matches the schema."
+  ],
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "email_id": { "type": "string" },
+      "from": { "type": "string" },
+      "to": { "type": "string" },
+      "cc": {
+        "type": "array",
+        "items": { "type": "string" }
+      },
+      "bcc": {
+        "type": "array",
+        "items": { "type": "string" }
+      },
+      "subject": { "type": "string" },
+      "received_at": { "type": "string" },
+      "folder": { "type": "string" },
+      "subfolder": { "type": "string" },
+      "body_text": { "type": "string" },
+      "body_html": { "type": "string" },
+      "ai_summary": { "type": "string" },
+      "attachments": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": { "type": "string" },
+            "name": { "type": "string" },
+            "mime_type": { "type": "string" },
+            "size_bytes": { "type": "number" }
+          },
+          "required": ["id", "name", "mime_type", "size_bytes"],
+          "additionalProperties": false
+        }
+      }
+    },
+    "required": [
+      "email_id",
+      "from",
+      "to",
+      "cc",
+      "bcc",
+      "subject",
+      "received_at",
+      "folder",
+      "subfolder",
+      "body_text",
+      "body_html",
+      "ai_summary",
+      "attachments"
+    ],
+    "additionalProperties": false
+  }
+}

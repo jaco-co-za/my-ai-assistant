@@ -1,0 +1,25 @@
+{
+  "name": "query_entity",
+  "version": 1,
+  "instructions": [
+    "You are selecting which entity_id is being asked about for status.",
+    "Request:",
+    "{{payload}}",
+    "Entity filter matched: {{filteredCount}}",
+    "Entity list:",
+    "{{entitiesSummary}}",
+    "If you are not 100% confident, return multiple candidates.",
+    "Return ONLY JSON with a field entity_ids: string[]."
+  ],
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "entity_ids": {
+        "type": "array",
+        "items": { "type": "string" }
+      }
+    },
+    "required": ["entity_ids"],
+    "additionalProperties": false
+  }
+}

@@ -1,0 +1,3105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Jacos AI Assistant</title>
+    <link href="/assets/bootstrap.min.css" rel="stylesheet" />
+    <style>
+      :root {
+        color-scheme: dark;
+        --accent: #4fd18b;
+        --accent-soft: #1f3b2a;
+        --bg: #0c1210;
+        --border: #1d2a24;
+        --text: #e7f4eb;
+        --muted: #9bb9a6;
+        --panel: #111a17;
+      }
+      body {
+        margin: 0;
+        font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+      header {
+        padding: 24px;
+        background: linear-gradient(135deg, #14241c, #0f1713);
+        border-bottom: 1px solid var(--border);
+      }
+      h1 {
+        margin: 0;
+        font-size: 22px;
+        letter-spacing: 0.3px;
+      }
+      main {
+        max-width: none;
+        margin: 0;
+        padding: 16px 8px;
+      }
+      .layout-row {
+        gap: 0;
+      }
+      form {
+        display: grid;
+        gap: 12px;
+      }
+      textarea {
+        min-height: 60px;
+        padding: 12px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: #0f1714;
+        color: var(--text);
+        font-size: 14px;
+        resize: vertical;
+      }
+      button {
+        padding: 10px 16px;
+        border: none;
+        border-radius: 10px;
+        background: #2f9b66;
+        color: #0b1510;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #41b779;
+      }
+      button:disabled {
+        opacity: 0.7;
+        cursor: not-allowed;
+      }
+      .panel {
+        margin-top: 24px;
+        background: var(--panel);
+        border-radius: 12px;
+        padding: 16px;
+        border: 1px solid var(--border);
+      }
+      #replyPanel {
+        height: 59vh;
+        min-height: 59vh;
+        max-height: 59vh;
+        overflow: auto;
+      }
+      .panel.sticky {
+        position: sticky;
+        top: 24px;
+      }
+      .panel-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .control-panel {
+        margin-bottom: 24px;
+        font-size: 12px;
+      }
+      .control-panel.collapsed .control-panel-body {
+        display: none;
+      }
+      .control-panel-title {
+        margin: 0;
+      }
+      .collapse-toggle {
+        width: 28px;
+        height: 28px;
+        border-radius: 8px;
+        padding: 0;
+        font-size: 16px;
+        line-height: 1;
+      }
+      .control-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 10px 0;
+        border-bottom: 1px solid var(--border);
+        position: relative;
+      }
+      .control-row:last-child {
+        border-bottom: none;
+      }
+      .control-section-title {
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-top: 10px;
+      }
+      .control-section-title:first-child {
+        margin-top: 0;
+      }
+      .toggle {
+        width: 42px;
+        height: 24px;
+        background: #1a2a23;
+        border-radius: 999px;
+        position: relative;
+        border: 1px solid var(--border);
+        cursor: pointer;
+      }
+      .toggle::after {
+        content: "";
+        width: 18px;
+        height: 18px;
+        background: #2f9b66;
+        border-radius: 50%;
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        transition: transform 0.2s ease;
+      }
+      .toggle.active {
+        background: #163323;
+      }
+      .toggle.active::after {
+        transform: translateX(18px);
+      }
+      .toggle:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+      .save-button {
+        margin-top: 16px;
+        width: 100%;
+      }
+      .shortcut-panel {
+        margin-top: 12px;
+      }
+      .shortcut-panel .label {
+        display: block;
+        margin-bottom: 10px;
+      }
+      .shortcut-button {
+        width: 100%;
+        margin-bottom: 8px;
+      }
+      .shortcut-panel .shortcut-button:last-of-type {
+        margin-bottom: 0;
+      }
+      .oauth-callback-panel {
+        margin-top: 10px;
+        padding: 10px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #0f1714;
+        display: none;
+      }
+      .oauth-callback-panel.active {
+        display: block;
+      }
+      .oauth-callback-input {
+        width: 100%;
+        min-height: 78px;
+        margin-bottom: 8px;
+        font-size: 12px;
+      }
+      .oauth-callback-save {
+        width: 100%;
+      }
+      .icon-button {
+        background: transparent;
+        border: 1px solid var(--border);
+        color: var(--muted);
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 14px;
+        padding: 0;
+      }
+      .icon-button:hover {
+        color: var(--text);
+        border-color: #2f9b66;
+      }
+      .close-button {
+        width: 34px;
+        height: 34px;
+        border-radius: 10px;
+        font-size: 18px;
+        line-height: 1;
+      }
+      .banner {
+        display: none;
+        margin-top: 16px;
+        padding: 12px;
+        border-radius: 10px;
+        background: #2b2412;
+        border: 1px solid #5b4a1a;
+        color: #f0d9a6;
+        font-weight: 600;
+      }
+      .banner.active {
+        display: block;
+      }
+      .status {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-weight: 600;
+        color: var(--muted);
+      }
+      .spinner {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        border: 2px solid var(--accent-soft);
+        border-top-color: var(--accent);
+        animation: spin 0.9s linear infinite;
+        display: none;
+      }
+      .status.waiting .spinner {
+        display: inline-block;
+      }
+      .result {
+        margin-top: 16px;
+        display: grid;
+        gap: 8px;
+      }
+      .label {
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .label-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .viewer-tabs {
+        display: flex;
+        gap: 8px;
+        margin-top: 8px;
+      }
+      .viewer-tab {
+        border: 1px solid var(--border);
+        background: #0f1714;
+        color: var(--muted);
+        border-radius: 999px;
+        padding: 6px 12px;
+        font-size: 12px;
+        line-height: 1.2;
+      }
+      .viewer-tab.active {
+        color: var(--text);
+        border-color: #2f9b66;
+        background: #163323;
+      }
+      .viewer-tab.clear-thread {
+        border-color: #5a2d2d;
+        color: #f0c5c5;
+        background: #2a1414;
+      }
+      .viewer-tab.clear-thread:hover {
+        background: #3a1d1d;
+      }
+      .viewer-panel {
+        margin-top: 8px;
+      }
+      .viewer-panel.hidden {
+        display: none;
+      }
+      .email-list {
+        display: grid;
+        gap: 10px;
+      }
+      .email-list-item {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #0b120f;
+        padding: 10px;
+      }
+      .email-list-id {
+        font-weight: 700;
+        color: var(--text);
+      }
+      .email-list-line {
+        margin-top: 4px;
+      }
+      .email-view-button {
+        margin-top: 8px;
+        width: auto;
+        border-radius: 999px;
+        padding: 6px 10px;
+        font-size: 12px;
+        background: #163323;
+        color: var(--text);
+        border: 1px solid #2f9b66;
+      }
+      .email-view-button:hover {
+        background: #1d432d;
+      }
+      .email-viewer-layout {
+        display: grid;
+        grid-template-columns: 1.2fr 0.8fr;
+        gap: 10px;
+      }
+      .email-viewer-column {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #0b120f;
+        padding: 10px;
+        min-height: 220px;
+      }
+      .email-viewer-title {
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--muted);
+        margin-bottom: 8px;
+      }
+      .email-viewer-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 8px;
+      }
+      .email-viewer-title-wrap {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .email-viewer-nav {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .email-viewer-busy {
+        display: none;
+        align-items: center;
+        gap: 6px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .email-viewer-busy.active {
+        display: inline-flex;
+      }
+      .email-viewer-busy-spinner {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        border: 2px solid var(--accent-soft);
+        border-top-color: var(--accent);
+        animation: spin 0.9s linear infinite;
+      }
+      .email-viewer-counter {
+        font-size: 11px;
+        color: var(--muted);
+        min-width: 44px;
+        text-align: center;
+      }
+      .email-viewer-nav-button {
+        width: 24px;
+        height: 24px;
+        border-radius: 6px;
+        padding: 0;
+        font-size: 14px;
+      }
+      .email-viewer-empty {
+        color: var(--muted);
+      }
+      #emailViewerValue,
+      #emailSummaryValue {
+        white-space: normal;
+        line-height: 1.6;
+      }
+      #emailViewerValue p,
+      #emailSummaryValue p {
+        margin: 0 0 10px 0 !important;
+      }
+      #emailViewerValue p:last-child,
+      #emailSummaryValue p:last-child {
+        margin-bottom: 0;
+      }
+      #emailViewerValue h1,
+      #emailViewerValue h2,
+      #emailViewerValue h3,
+      #emailViewerValue h4,
+      #emailViewerValue h5,
+      #emailViewerValue h6,
+      #emailSummaryValue h1,
+      #emailSummaryValue h2,
+      #emailSummaryValue h3,
+      #emailSummaryValue h4,
+      #emailSummaryValue h5,
+      #emailSummaryValue h6 {
+        margin: 0 0 10px 0 !important;
+        line-height: 1.2;
+      }
+      #emailViewerValue div,
+      #emailSummaryValue div,
+      #emailViewerValue article,
+      #emailSummaryValue article,
+      #emailViewerValue section,
+      #emailSummaryValue section {
+        margin: 0 0 8px 0 !important;
+      }
+      #emailViewerValue ul,
+      #emailViewerValue ol,
+      #emailSummaryValue ul,
+      #emailSummaryValue ol {
+        margin: 0 0 10px 20px !important;
+      }
+      #emailViewerValue strong,
+      #emailSummaryValue strong {
+        display: inline-block;
+        margin-top: 2px;
+      }
+      .email-viewer-attachments {
+        margin-top: 10px;
+        display: grid;
+        gap: 8px;
+      }
+      .email-viewer-attachment-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 8px;
+      }
+      .email-viewer-summary {
+        white-space: normal;
+      }
+      .email-summary-ai-label {
+        font-style: normal;
+      }
+      .email-summary-ai-text {
+        font-style: italic;
+        white-space: pre-line;
+      }
+      .email-summary-divider {
+        height: 2px;
+        background: #4fd18b;
+        opacity: 1;
+        margin: 12px 0;
+      }
+      @media (max-width: 980px) {
+        .email-viewer-layout {
+          grid-template-columns: 1fr;
+        }
+      }
+      .reply-history-nav {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .reply-history-button {
+        width: 24px;
+        height: 24px;
+        border-radius: 6px;
+        padding: 0;
+        font-size: 14px;
+      }
+      .value {
+        background: #0f1714;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 12px;
+        min-height: 44px;
+        white-space: pre-wrap;
+        max-width: 100%;
+        overflow-wrap: anywhere;
+      }
+      #replyValue {
+        height: 30vh;
+        min-height: 30vh;
+        max-height: 30vh;
+        overflow: auto;
+      }
+      .attachment-list {
+        display: grid;
+        gap: 8px;
+      }
+      .attachment-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 8px 10px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: #0b120f;
+      }
+      .attachment-name {
+        overflow-wrap: anywhere;
+        color: var(--text);
+      }
+      .download-link {
+        color: #8ddbb0;
+        text-decoration: none;
+        white-space: nowrap;
+      }
+      .download-link:hover {
+        text-decoration: underline;
+      }
+      .reply-attachment-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin: 4px 0;
+        padding: 8px 10px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: #0b120f;
+      }
+      .reply-attachment-name {
+        overflow-wrap: anywhere;
+      }
+      .reply-attachment-meta {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        white-space: nowrap;
+      }
+      .attachment-id-tag {
+        display: inline-flex;
+        align-items: center;
+        padding: 2px 8px;
+        border-radius: 999px;
+        border: 1px solid #2f9b66;
+        background: #163323;
+        color: #b8f0d2;
+        font-size: 11px;
+        line-height: 1.3;
+        font-weight: 600;
+        text-decoration: none;
+      }
+      .attachment-id-tag:hover {
+        background: #1d432d;
+        color: #d7f9e6;
+      }
+      button.attachment-id-tag {
+        cursor: pointer;
+      }
+      .action-list {
+        display: flex;
+        flex-wrap: wrap;
+        column-gap: 2px;
+        row-gap: 2px;
+        align-items: center;
+      }
+      .action-list-inline {
+        display: inline-flex;
+        flex-wrap: wrap;
+        vertical-align: middle;
+      }
+      .action-list-block {
+        margin-top: 2px;
+      }
+      .prefill-button {
+        width: auto;
+        text-align: left;
+        background: #163323;
+        color: var(--text);
+        border: 1px solid #2f9b66;
+        border-radius: 999px;
+        padding: 6px 10px;
+        font-size: 12px;
+        line-height: 1.2;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .prefill-icon {
+        font-size: 13px;
+      }
+      .prefill-button:hover {
+        background: #1d432d;
+      }
+      .events {
+        margin-top: 12px;
+        max-height: 75vh;
+        overflow: auto;
+        display: grid;
+        gap: 10px;
+      }
+      .hidden-panel {
+        display: none;
+      }
+      .event {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 10px;
+        background: #0f1714;
+        font-size: 12px;
+        line-height: 1.4;
+        color: var(--muted);
+        white-space: pre-wrap;
+      }
+      .event strong {
+        color: var(--text);
+        font-weight: 600;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Jacos AI Assistant</h1>
+    </header>
+    <main>
+      <div class="container-fluid">
+        <div class="row layout-row align-items-start mx-0 gx-2">
+          <div class="col-2">
+            <section class="panel control-panel collapsed" id="controlPanel">
+              <div class="panel-header">
+                <div class="label control-panel-title">Control Panel</div>
+                <button type="button" class="icon-button collapse-toggle" id="controlPanelToggle" aria-expanded="false" aria-label="Expand control panel">&#8250;</button>
+              </div>
+              <div class="control-panel-body" id="controlPanelBody">
+                <div class="control-section-title">Model Providers</div>
+                <div class="control-row">
+                  <span>OpenAI API Enabled</span>
+                  <button type="button" class="toggle" id="openAiApiToggle" aria-pressed="false"></button>
+                </div>
+                <div class="control-row">
+                  <span>OpenAI Codex Enabled</span>
+                  <button type="button" class="toggle" id="openAiCodexToggle" aria-pressed="false"></button>
+                </div>
+                <div class="control-section-title">Notifications</div>
+                <div class="control-row">
+                  <span>Notify On UI</span>
+                  <button type="button" class="toggle" id="notifyUiToggle" aria-pressed="false"></button>
+                </div>
+                <div class="control-row">
+                  <span>Pushover</span>
+                  <button type="button" class="toggle" id="notifyPushoverToggle" aria-pressed="false"></button>
+                </div>
+                <div class="control-row">
+                  <span>WhatsApp</span>
+                  <button type="button" class="toggle" id="notifyWhatsappToggle" aria-pressed="false"></button>
+                </div>
+                <div class="control-section-title">Execution</div>
+                <div class="control-row">
+                  <span>Command Execution</span>
+                  <button type="button" class="toggle" id="commandExecutionToggle" aria-pressed="false"></button>
+                </div>
+                <div class="control-row">
+                  <span>Show Event Viewer</span>
+                  <button type="button" class="toggle" id="showEventsToggle" aria-pressed="false"></button>
+                </div>
+                <button type="button" class="save-button" id="codexLoginShortcut">Codex Login</button>
+                <button type="button" class="save-button" id="saveConfigButton">Save</button>
+              </div>
+            </section>
+            <section class="panel shortcut-panel">
+              <div class="label">Shortcuts</div>
+              <button type="button" class="shortcut-button" id="checkMailShortcut">Check Mail</button>
+              <button type="button" class="shortcut-button" id="remindMeShortcut">Remind Me</button>
+              <button type="button" class="shortcut-button" id="homeAssistantShortcut">Home Assistant</button>
+              <button type="button" class="shortcut-button" id="showScheduleShortcut">Show My Scheduler</button>
+              <div class="oauth-callback-panel" id="oauthCallbackPanel">
+                <div class="label">Codex Callback URL</div>
+                <textarea
+                  id="oauthCallbackInput"
+                  class="oauth-callback-input"
+                  placeholder="Paste the full localhost callback URL here..."
+                ></textarea>
+                <button type="button" class="oauth-callback-save" id="oauthCallbackSaveButton">Save Callback Token</button>
+              </div>
+            </section>
+          </div>
+          <div class="col">
+            <form id="sendForm" class="panel">
+              <textarea id="message" name="message" placeholder="Drop a message here..."></textarea>
+              <button type="submit" id="sendButton">Send Message</button>
+            </form>
+            <div class="banner" id="tabBanner">Already open in another tab.</div>
+            <section class="panel" id="replyPanel">
+              <div class="status" id="statusRow">
+                <span class="spinner" aria-hidden="true"></span>
+                <span id="statusText">Idle</span>
+              </div>
+              <div class="result">
+                <div class="label">Prompt</div>
+                <div class="value" id="promptValue"></div>
+                <div class="label label-row">
+                  <span id="responseTitleLabel">Reply</span>
+                  <span class="reply-history-nav">
+                    <button type="button" class="icon-button reply-history-button" id="replyPrevButton" aria-label="Previous reply">&#8249;</button>
+                    <button type="button" class="icon-button reply-history-button" id="replyNextButton" aria-label="Next reply">&#8250;</button>
+                  </span>
+                </div>
+                <div class="viewer-tabs">
+                  <button type="button" class="viewer-tab active" id="replyTabButton">Result</button>
+                  <button type="button" class="viewer-tab" id="emailTabButton">Email Viewer</button>
+                  <button type="button" class="viewer-tab clear-thread" id="clearHistoryThreadButton">Clear Thread</button>
+                </div>
+                <div class="viewer-panel" id="replyTabPanel">
+                  <div class="value" id="replyValue"></div>
+                </div>
+                <div class="viewer-panel hidden" id="emailTabPanel">
+                  <div class="email-viewer-layout">
+                    <div class="email-viewer-column">
+                      <div class="email-viewer-header">
+                        <div class="email-viewer-title-wrap">
+                          <div class="email-viewer-title">Email</div>
+                          <div class="email-viewer-busy" id="emailViewerBusy">
+                            <span class="email-viewer-busy-spinner" aria-hidden="true"></span>
+                            <span id="emailViewerBusyText">Rendering...</span>
+                          </div>
+                        </div>
+                        <div class="email-viewer-nav">
+                          <button type="button" class="icon-button email-viewer-nav-button" id="emailViewerPrevButton" aria-label="Previous email">&#8249;</button>
+                          <span class="email-viewer-counter" id="emailViewerCounter">0/0</span>
+                          <button type="button" class="icon-button email-viewer-nav-button" id="emailViewerNextButton" aria-label="Next email">&#8250;</button>
+                          <button type="button" class="icon-button email-viewer-nav-button close-button" id="emailViewerRemoveButton" aria-label="Remove from email viewer queue">&times;</button>
+                        </div>
+                      </div>
+                      <div id="emailViewerValue" class="email-viewer-empty">Select "View in Email" to open a message.</div>
+                      <div id="emailViewerAttachments" class="email-viewer-attachments"></div>
+                    </div>
+                    <div class="email-viewer-column">
+                      <div class="email-viewer-title">Summary</div>
+                      <div id="emailSummaryValue" class="email-viewer-summary email-viewer-empty">No summary yet.</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
+          <div class="col-2" id="eventViewerColumn">
+            <aside class="panel sticky">
+              <div class="panel-header">
+                <div class="label">Event Viewer</div>
+                <button type="button" class="icon-button" id="clearEventsButton" aria-label="Clear events">
+                  &times;
+                </button>
+              </div>
+              <div class="events" id="eventList"></div>
+            </aside>
+          </div>
+        </div>
+      </div>
+      <script>
+        (function () {
+          const wsUrl = "{{uiWsUrl}}";
+          const historyDaysEnv = Number("{{historyDays}}");
+          const form = document.getElementById("sendForm");
+          const textarea = document.getElementById("message");
+          const button = document.getElementById("sendButton");
+          const statusRow = document.getElementById("statusRow");
+          const statusText = document.getElementById("statusText");
+          const promptValue = document.getElementById("promptValue");
+          const replyValue = document.getElementById("replyValue");
+          const responseTitleLabel = document.getElementById("responseTitleLabel");
+          const replyTabButton = document.getElementById("replyTabButton");
+          const emailTabButton = document.getElementById("emailTabButton");
+          const clearHistoryThreadButton = document.getElementById("clearHistoryThreadButton");
+          const replyTabPanel = document.getElementById("replyTabPanel");
+          const emailTabPanel = document.getElementById("emailTabPanel");
+          const emailViewerValue = document.getElementById("emailViewerValue");
+          const emailViewerAttachments = document.getElementById("emailViewerAttachments");
+          const emailSummaryValue = document.getElementById("emailSummaryValue");
+          const emailViewerPrevButton = document.getElementById("emailViewerPrevButton");
+          const emailViewerNextButton = document.getElementById("emailViewerNextButton");
+          const emailViewerRemoveButton = document.getElementById("emailViewerRemoveButton");
+          const emailViewerCounter = document.getElementById("emailViewerCounter");
+          const emailViewerBusy = document.getElementById("emailViewerBusy");
+          const emailViewerBusyText = document.getElementById("emailViewerBusyText");
+          const tabBanner = document.getElementById("tabBanner");
+          const eventViewerColumn = document.getElementById("eventViewerColumn");
+          const eventList = document.getElementById("eventList");
+          const clearEventsButton = document.getElementById("clearEventsButton");
+          const openAiApiToggle = document.getElementById("openAiApiToggle");
+          const openAiCodexToggle = document.getElementById("openAiCodexToggle");
+          const notifyUiToggle = document.getElementById("notifyUiToggle");
+          const notifyPushoverToggle = document.getElementById("notifyPushoverToggle");
+          const notifyWhatsappToggle = document.getElementById("notifyWhatsappToggle");
+          const commandExecutionToggle = document.getElementById("commandExecutionToggle");
+          const showEventsToggle = document.getElementById("showEventsToggle");
+          const controlPanel = document.getElementById("controlPanel");
+          const controlPanelToggle = document.getElementById("controlPanelToggle");
+          const saveConfigButton = document.getElementById("saveConfigButton");
+          const checkMailShortcut = document.getElementById("checkMailShortcut");
+          const remindMeShortcut = document.getElementById("remindMeShortcut");
+          const homeAssistantShortcut = document.getElementById("homeAssistantShortcut");
+          const showScheduleShortcut = document.getElementById("showScheduleShortcut");
+          const codexLoginShortcut = document.getElementById("codexLoginShortcut");
+          const oauthCallbackPanel = document.getElementById("oauthCallbackPanel");
+          const oauthCallbackInput = document.getElementById("oauthCallbackInput");
+          const oauthCallbackSaveButton = document.getElementById("oauthCallbackSaveButton");
+          const replyPrevButton = document.getElementById("replyPrevButton");
+          const replyNextButton = document.getElementById("replyNextButton");
+          let socket = null;
+          let reconnectTimer = null;
+          let lockRetryTimer = null;
+          let activeLock = null;
+          const tabId = Math.random().toString(36).slice(2);
+          let openAiApiEnabled = false;
+          let openAiCodexEnabled = false;
+          let codexAuthAvailable = false;
+          let notifyUiEnabled = true;
+          let notifyPushoverEnabled = true;
+          let notifyWhatsappEnabled = true;
+          let commandExecutionEnabled = false;
+          let pendingRequestId = "";
+          let pendingReplyPrefill = "";
+          let pendingPromptText = "";
+          let pendingAttachmentAutoDownloadId = "";
+          let pendingEmailViewerDownloadRequest = null;
+          let pendingEmailViewerDetailsRequest = null;
+          let openAiDirty = false;
+          const replyHistory = [];
+          const replyHistoryLimit = 30;
+          const replyHistoryStorageKey = "ai-assistant-history-v1";
+          const replyHistoryRetentionMs =
+            (Number.isFinite(historyDaysEnv) && historyDaysEnv > 0 ? historyDaysEnv : 1) * 24 * 60 * 60 * 1000;
+          let replyHistoryIndex = -1;
+          const emailViewerQueue = [];
+          const emailViewerQueueLimit = 60;
+          const emailViewerQueueStorageKey = "ai-assistant-email-viewer-queue-v1";
+          let emailViewerQueueIndex = -1;
+          let currentResultEmailCards = [];
+          const emailSummaryMemoryStorageKey = "ai-assistant-email-summary-memory-v1";
+          const emailSummaryMemory = {};
+          let browserNotifyEnabled = true;
+          let activeViewerTab = "reply";
+          let showEventsEnabled = false;
+          const eventsToggleStorageKey = "ai-assistant-events-visible";
+
+          function renderOpenAiToggles() {
+            openAiApiToggle.classList.toggle("active", openAiApiEnabled);
+            openAiApiToggle.setAttribute("aria-pressed", openAiApiEnabled ? "true" : "false");
+            openAiCodexToggle.classList.toggle("active", openAiCodexEnabled);
+            openAiCodexToggle.setAttribute("aria-pressed", openAiCodexEnabled ? "true" : "false");
+            openAiCodexToggle.disabled = !codexAuthAvailable;
+          }
+
+          function renderNotifyToggles() {
+            notifyUiToggle.classList.toggle("active", notifyUiEnabled);
+            notifyUiToggle.setAttribute("aria-pressed", notifyUiEnabled ? "true" : "false");
+            notifyPushoverToggle.classList.toggle("active", notifyPushoverEnabled);
+            notifyPushoverToggle.setAttribute("aria-pressed", notifyPushoverEnabled ? "true" : "false");
+            notifyWhatsappToggle.classList.toggle("active", notifyWhatsappEnabled);
+            notifyWhatsappToggle.setAttribute("aria-pressed", notifyWhatsappEnabled ? "true" : "false");
+            browserNotifyEnabled = notifyUiEnabled;
+          }
+
+          function renderExecutionToggles() {
+            commandExecutionToggle.classList.toggle("active", commandExecutionEnabled);
+            commandExecutionToggle.setAttribute("aria-pressed", commandExecutionEnabled ? "true" : "false");
+          }
+
+          function renderEventsToggle() {
+            showEventsToggle.classList.toggle("active", showEventsEnabled);
+            showEventsToggle.setAttribute("aria-pressed", showEventsEnabled ? "true" : "false");
+            eventViewerColumn.classList.toggle("hidden-panel", !showEventsEnabled);
+          }
+
+          function renderControlPanelCollapsed() {
+            const collapsed = controlPanel.classList.contains("collapsed");
+            controlPanelToggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+            controlPanelToggle.innerHTML = collapsed ? "&#8250;" : "&#9662;";
+          }
+
+          function setActiveViewerTab(tabName) {
+            activeViewerTab = tabName === "email" ? "email" : "reply";
+            const emailActive = activeViewerTab === "email";
+            replyTabButton.classList.toggle("active", !emailActive);
+            emailTabButton.classList.toggle("active", emailActive);
+            replyTabPanel.classList.toggle("hidden", emailActive);
+            emailTabPanel.classList.toggle("hidden", !emailActive);
+            responseTitleLabel.textContent = emailActive ? "Email Viewer" : "Reply";
+          }
+
+          function resetEmailViewer() {
+            emailViewerValue.textContent = 'Select "View in Email" to open a message.';
+            emailViewerValue.classList.add("email-viewer-empty");
+            emailViewerAttachments.textContent = "";
+            emailSummaryValue.textContent = "No summary yet.";
+            emailSummaryValue.classList.add("email-viewer-empty");
+            setEmailViewerBusy(false);
+            renderEmailViewerQueueNav();
+          }
+
+          function setEmailViewerBusy(active, message) {
+            const on = Boolean(active);
+            emailViewerBusy.classList.toggle("active", on);
+            if (typeof message === "string" && message.trim()) {
+              emailViewerBusyText.textContent = message.trim();
+            } else if (!on) {
+              emailViewerBusyText.textContent = "Rendering...";
+            }
+          }
+
+          function setIdle() {
+            statusRow.classList.remove("waiting");
+            statusText.textContent = "Idle";
+            button.classList.remove("btn", "btn-warning");
+            button.textContent = "Send Message";
+            pendingRequestId = "";
+          }
+
+          function setWaiting(message) {
+            statusRow.classList.add("waiting");
+            statusText.textContent = "Waiting for " + message;
+          }
+
+          async function ensureBrowserNotificationPermission() {
+            if (!("Notification" in window)) {
+              return false;
+            }
+            if (Notification.permission === "granted") {
+              return true;
+            }
+            if (Notification.permission === "denied") {
+              return false;
+            }
+            try {
+              const permission = await Notification.requestPermission();
+              return permission === "granted";
+            } catch {
+              return false;
+            }
+          }
+
+          async function showBrowserNotification(title, body) {
+            if (!browserNotifyEnabled) {
+              return;
+            }
+            const granted = await ensureBrowserNotificationPermission();
+            if (!granted) {
+              pushEvent("notify", "browser notification permission not granted");
+              return;
+            }
+            try {
+              const notification = new Notification(title, {
+                body: body || "",
+                tag: "ai-assistant-notify",
+              });
+              notification.onclick = function () {
+                window.focus();
+                notification.close();
+              };
+            } catch (error) {
+              pushEvent("notify", "failed to show browser notification");
+            }
+          }
+
+          function sendMessage(message, options) {
+            const text = typeof message === "string" ? message.trim() : "";
+            if (!text) {
+              return false;
+            }
+            if (isAddAllToEmailViewerCommand(text)) {
+              const added = addAllCurrentResultEmailsToViewer();
+              if (!added) {
+                pushEvent("email-viewer", "no emails in current result to add");
+              }
+              return false;
+            }
+            if (button.textContent === "Cancel" && pendingRequestId) {
+              return false;
+            }
+
+            clearResult();
+            setWaiting(text);
+            button.classList.add("btn", "btn-warning");
+            button.textContent = "Cancel";
+            promptValue.textContent = text;
+            pendingPromptText = text;
+            pushEvent("send", text);
+
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+              replyValue.textContent = "socket not connected";
+              setIdle();
+              button.classList.remove("btn", "btn-warning");
+              button.textContent = "Send Message";
+              return false;
+            }
+
+            pendingRequestId = Math.random().toString(36).slice(2);
+            pendingReplyPrefill = options && typeof options.prefillOnReply === "string" ? options.prefillOnReply : "";
+            socket.send(JSON.stringify({ type: "message", message: text, requestId: pendingRequestId }));
+            return true;
+          }
+
+          function clearResult() {
+            promptValue.textContent = "";
+            replyValue.textContent = "";
+            resetEmailViewer();
+            setActiveViewerTab("reply");
+          }
+
+          function updateReplyHistoryButtons() {
+            const hasHistory = replyHistory.length > 0;
+            replyPrevButton.disabled = !hasHistory || replyHistoryIndex <= 0;
+            replyNextButton.disabled = !hasHistory || replyHistoryIndex >= replyHistory.length;
+          }
+
+          function renderCurrentHistoryCursor() {
+            if (replyHistoryIndex >= 0 && replyHistoryIndex < replyHistory.length) {
+              renderReplyHistoryEntry(replyHistory[replyHistoryIndex]);
+              return;
+            }
+            promptValue.textContent = "";
+            replyValue.textContent = "";
+            resetEmailViewer();
+            setActiveViewerTab("reply");
+            updateReplyHistoryButtons();
+          }
+
+          function normalizeHistoryEntry(entry) {
+            if (!entry || typeof entry !== "object") {
+              return null;
+            }
+            const prompt = typeof entry.prompt === "string" ? entry.prompt : "";
+            const message = typeof entry.message === "string" ? entry.message : "";
+            const actions = Array.isArray(entry.actions) ? entry.actions : undefined;
+            const attachments = Array.isArray(entry.attachments) ? entry.attachments : undefined;
+            const createdAtRaw = typeof entry.createdAt === "number" ? entry.createdAt : Number(entry.createdAt);
+            const createdAt = Number.isFinite(createdAtRaw) && createdAtRaw > 0 ? createdAtRaw : Date.now();
+            return { prompt, message, actions, attachments, createdAt };
+          }
+
+          function pruneHistoryEntries(entries) {
+            const now = Date.now();
+            return entries.filter(function (entry) {
+              const createdAt = typeof entry.createdAt === "number" ? entry.createdAt : 0;
+              return createdAt > 0 && now - createdAt <= replyHistoryRetentionMs;
+            });
+          }
+
+          function persistReplyHistory() {
+            const trimmed = pruneHistoryEntries(replyHistory).slice(-replyHistoryLimit);
+            replyHistory.length = 0;
+            for (const item of trimmed) {
+              replyHistory.push(item);
+            }
+            if (replyHistory.length === 0) {
+              localStorage.removeItem(replyHistoryStorageKey);
+              replyHistoryIndex = -1;
+              return;
+            }
+            if (replyHistoryIndex >= replyHistory.length) {
+              replyHistoryIndex = replyHistory.length - 1;
+            }
+            localStorage.setItem(replyHistoryStorageKey, JSON.stringify(replyHistory));
+          }
+
+          function normalizeEmailViewerEntry(entry) {
+            if (!entry || typeof entry !== "object") {
+              return null;
+            }
+            const id = typeof entry.id === "string" ? entry.id.trim() : "";
+            if (!id) {
+              return null;
+            }
+            const attachments = Array.isArray(entry.attachments) ? entry.attachments : [];
+            const attachmentIds = Array.isArray(entry.attachmentIds) ? entry.attachmentIds : [];
+            const createdAtRaw = typeof entry.createdAt === "number" ? entry.createdAt : Number(entry.createdAt);
+            const createdAt = Number.isFinite(createdAtRaw) && createdAtRaw > 0 ? createdAtRaw : Date.now();
+              return {
+                id,
+                from: typeof entry.from === "string" ? entry.from : "",
+                to: typeof entry.to === "string" ? entry.to : "",
+                subject: typeof entry.subject === "string" ? entry.subject : "",
+                received: typeof entry.received === "string" ? entry.received : "",
+                folder: typeof entry.folder === "string" ? entry.folder : "",
+                subfolder: typeof entry.subfolder === "string" ? entry.subfolder : "",
+                body: typeof entry.body === "string" ? entry.body : "",
+                attachments: attachments.map(function (item) { return String(item || ""); }).filter(function (item) { return item.length > 0; }),
+                attachmentIds: attachmentIds.map(function (item) { return String(item || ""); }).filter(function (item) { return item.length > 0; }),
+                readCommand: typeof entry.readCommand === "string" ? entry.readCommand : "",
+                replyCommand: typeof entry.replyCommand === "string" ? entry.replyCommand : "",
+              attachmentCommand: typeof entry.attachmentCommand === "string" ? entry.attachmentCommand : "",
+              summary: typeof entry.summary === "string" ? entry.summary : "",
+              createdAt,
+            };
+          }
+
+          function pruneEmailViewerEntries(entries) {
+            const now = Date.now();
+            return entries.filter(function (entry) {
+              const createdAt = typeof entry.createdAt === "number" ? entry.createdAt : 0;
+              return createdAt > 0 && now - createdAt <= replyHistoryRetentionMs;
+            });
+          }
+
+          function pruneEmailSummaryMemoryMap(map) {
+            const now = Date.now();
+            const result = {};
+            const keys = Object.keys(map || {});
+            for (const key of keys) {
+              const row = map[key];
+              if (!row || typeof row !== "object") {
+                continue;
+              }
+              const summary = typeof row.summary === "string" ? row.summary.trim() : "";
+              const body = typeof row.body === "string" ? row.body.trim() : "";
+              const updatedAtRaw = typeof row.updatedAt === "number" ? row.updatedAt : Number(row.updatedAt);
+              const updatedAt = Number.isFinite(updatedAtRaw) && updatedAtRaw > 0 ? updatedAtRaw : 0;
+              if ((!summary && !body) || !updatedAt) {
+                continue;
+              }
+              if (now - updatedAt > replyHistoryRetentionMs) {
+                continue;
+              }
+              result[key] = { summary, body, updatedAt };
+            }
+            return result;
+          }
+
+          function persistEmailSummaryMemory() {
+            const pruned = pruneEmailSummaryMemoryMap(emailSummaryMemory);
+            const keys = Object.keys(emailSummaryMemory);
+            for (const key of keys) {
+              delete emailSummaryMemory[key];
+            }
+            for (const key of Object.keys(pruned)) {
+              emailSummaryMemory[key] = pruned[key];
+            }
+            if (Object.keys(emailSummaryMemory).length === 0) {
+              localStorage.removeItem(emailSummaryMemoryStorageKey);
+              return;
+            }
+            localStorage.setItem(emailSummaryMemoryStorageKey, JSON.stringify(emailSummaryMemory));
+          }
+
+          function loadEmailSummaryMemory() {
+            let parsed = {};
+            try {
+              parsed = JSON.parse(localStorage.getItem(emailSummaryMemoryStorageKey) || "{}");
+            } catch {
+              parsed = {};
+            }
+            const pruned = pruneEmailSummaryMemoryMap(parsed);
+            const keys = Object.keys(emailSummaryMemory);
+            for (const key of keys) {
+              delete emailSummaryMemory[key];
+            }
+            for (const key of Object.keys(pruned)) {
+              emailSummaryMemory[key] = pruned[key];
+            }
+            persistEmailSummaryMemory();
+          }
+
+          function parseJsonObjectMaybe(raw) {
+            if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+              return raw;
+            }
+            if (typeof raw !== "string") {
+              return null;
+            }
+            const trimmed = raw.trim();
+            if (!trimmed) {
+              return null;
+            }
+            try {
+              const parsed = JSON.parse(trimmed);
+              return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+            } catch {
+              return null;
+            }
+          }
+
+          function getStructuredEmailPayload(data) {
+            const candidates = [];
+            function appendCandidate(value) {
+              const parsed = parseJsonObjectMaybe(value);
+              if (!parsed) {
+                return;
+              }
+              candidates.push(
+                parsed,
+                parsed.email_viewer,
+                parsed.emailViewer,
+                parsed.email,
+                parsed.payload,
+                parsed.result,
+                parsed.data,
+              );
+              // Support LLM wrapper payloads: { message: { content: "{...json...}" } }
+              const wrappedMessage = parseJsonObjectMaybe(parsed.message);
+              if (wrappedMessage) {
+                candidates.push(
+                  wrappedMessage,
+                  wrappedMessage.email_viewer,
+                  wrappedMessage.emailViewer,
+                  wrappedMessage.email,
+                  wrappedMessage.payload,
+                  wrappedMessage.result,
+                  wrappedMessage.data,
+                );
+                const nestedContent = parseJsonObjectMaybe(wrappedMessage.content);
+                if (nestedContent) {
+                  candidates.push(
+                    nestedContent,
+                    nestedContent.email_viewer,
+                    nestedContent.emailViewer,
+                    nestedContent.email,
+                    nestedContent.payload,
+                    nestedContent.result,
+                    nestedContent.data,
+                  );
+                }
+              }
+            }
+            if (data && typeof data === "object") {
+              candidates.push(data.email_viewer, data.emailViewer, data.email, data.payload, data.result, data.data);
+              appendCandidate(data.msg);
+              appendCandidate(data.message);
+            }
+            const keys = [
+              "email_id",
+              "id",
+              "emailId",
+              "from",
+              "to",
+              "subject",
+              "ai_summary",
+              "summary",
+              "body_text",
+              "text_body",
+              "body_html",
+              "html_body",
+              "attachments",
+              "folder",
+              "subfolder",
+            ];
+            for (const candidate of candidates) {
+              if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+                continue;
+              }
+              if (keys.some(function (key) { return Object.prototype.hasOwnProperty.call(candidate, key); })) {
+                return candidate;
+              }
+            }
+            return null;
+          }
+
+          function parseEmailViewerDetailsFromStructuredReply(data, fallbackCard) {
+            const payload = getStructuredEmailPayload(data);
+            if (!payload) {
+              return null;
+            }
+            const fallbackId = fallbackCard && typeof fallbackCard.id === "string" ? fallbackCard.id.trim() : "";
+            const payloadId = String(payload.email_id || payload.emailId || payload.id || "").trim();
+            if (fallbackId && payloadId && payloadId !== fallbackId) {
+              return null;
+            }
+            const bodyHtml = typeof payload.body_html === "string" ? payload.body_html.trim() : "";
+            const bodyHtmlAlt = typeof payload.html_body === "string" ? payload.html_body.trim() : "";
+            const bodyText = typeof payload.body_text === "string" ? payload.body_text.trim() : "";
+            const bodyTextAlt = typeof payload.text_body === "string" ? payload.text_body.trim() : "";
+            const aiSummary =
+              (typeof payload.ai_summary === "string" ? payload.ai_summary.trim() : "") ||
+              (typeof payload.summary === "string" ? payload.summary.trim() : "");
+            return {
+              id: payloadId || fallbackId,
+              from: typeof payload.from === "string" ? payload.from.trim() : "",
+              to: typeof payload.to === "string" ? payload.to.trim() : "",
+              subject: typeof payload.subject === "string" ? payload.subject.trim() : "",
+              received: typeof payload.received_at === "string" ? payload.received_at.trim() : "",
+              folder: typeof payload.folder === "string" ? payload.folder.trim() : "",
+              subfolder: typeof payload.subfolder === "string" ? payload.subfolder.trim() : "",
+              body: bodyHtml || bodyHtmlAlt || bodyText || bodyTextAlt || "",
+              summary: aiSummary || "",
+            };
+          }
+
+          function getRememberedEmailSummary(emailId) {
+            const key = String(emailId || "").trim();
+            if (!key) {
+              return "";
+            }
+            const row = emailSummaryMemory[key];
+            return row && typeof row.summary === "string" ? sanitizeRememberedAiSummary(row.summary) : "";
+          }
+
+          function sanitizeRememberedAiSummary(text) {
+            const raw = String(text || "").trim();
+            if (!raw) {
+              return "";
+            }
+            const normalized = normalizeSummaryDisplayText(raw);
+            const lines = normalized.split(/\r?\n/);
+            const filtered = [];
+            for (const line of lines) {
+              if (/^\s*(Body|Email Body|Message Body|Content)\s*:/i.test(line)) {
+                break;
+              }
+              if (/^\s*(ID|From|To|Subject|Received|Attachments|Folder|Subfolder|Path|Folder Path)\s*:/i.test(line)) {
+                break;
+              }
+              filtered.push(line);
+            }
+            return filtered.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+          }
+
+          function normalizeSummaryDisplayText(text) {
+            const raw = String(text || "").trim();
+            if (!raw) {
+              return "";
+            }
+            const decoded = decodeHtmlEntities(raw);
+            const withBreaks = decoded
+              .replace(/<br\s*\/?>/gi, "\n")
+              .replace(/<\/p>/gi, "\n")
+              .replace(/<\/div>/gi, "\n")
+              .replace(/<\/li>/gi, "\n")
+              .replace(/<\/h[1-6]>/gi, "\n")
+              .replace(/<\/tr>/gi, "\n");
+            const stripped = withBreaks.replace(/<[^>]+>/g, "");
+            return stripped
+              .replace(/[ \t]+\n/g, "\n")
+              .replace(/\n{3,}/g, "\n\n")
+              .trim();
+          }
+
+          function getRememberedEmailBody(emailId) {
+            const key = String(emailId || "").trim();
+            if (!key) {
+              return "";
+            }
+            const row = emailSummaryMemory[key];
+            return row && typeof row.body === "string" ? row.body.trim() : "";
+          }
+
+          function escapeHtml(text) {
+            return String(text || "")
+              .replaceAll("&", "&amp;")
+              .replaceAll("<", "&lt;")
+              .replaceAll(">", "&gt;")
+              .replaceAll('"', "&quot;")
+              .replaceAll("'", "&#39;");
+          }
+
+          function decodeHtmlEntities(text) {
+            const el = document.createElement("textarea");
+            el.innerHTML = String(text || "");
+            return el.value;
+          }
+
+          function getSourceHtmlOrText(text) {
+            const raw = String(text || "").trim();
+            if (!raw) {
+              return { html: "", text: "", isHtml: false };
+            }
+            if (/<\/?[a-z][\s\S]*>/i.test(raw)) {
+              return { html: raw, text: raw, isHtml: true };
+            }
+            const decoded = decodeHtmlEntities(raw);
+            if (/<\/?[a-z][\s\S]*>/i.test(decoded)) {
+              return { html: decoded, text: decoded, isHtml: true };
+            }
+            return { html: "", text: raw, isHtml: false };
+          }
+
+          function shouldFetchEmailViewerDetails(card) {
+            if (!card || typeof card !== "object") {
+              return false;
+            }
+            const hasTo = typeof card.to === "string" && card.to.trim().length > 0;
+            const hasFolder = typeof card.folder === "string" && card.folder.trim().length > 0;
+            const hasSubfolder = typeof card.subfolder === "string" && card.subfolder.trim().length > 0;
+            const hasBody = typeof card.body === "string" && card.body.trim().length > 0;
+            const hasRememberedBody = getRememberedEmailBody(card.id).length > 0;
+            const hasRememberedSummary = getRememberedEmailSummary(card.id).length > 0;
+            const canRead = typeof card.readCommand === "string" && card.readCommand.trim().length > 0;
+            if (!canRead) {
+              return false;
+            }
+            return !(hasTo && (hasFolder || hasSubfolder) && (hasBody || hasRememberedBody) && hasRememberedSummary);
+          }
+
+          function renderEmailViewerQueueNav() {
+            const total = emailViewerQueue.length;
+            const current = total > 0 && emailViewerQueueIndex >= 0 ? emailViewerQueueIndex + 1 : 0;
+            emailViewerCounter.textContent = current + "/" + total;
+            emailViewerPrevButton.disabled = total === 0 || emailViewerQueueIndex <= 0;
+            emailViewerNextButton.disabled = total === 0 || emailViewerQueueIndex >= total - 1;
+            emailViewerRemoveButton.disabled = total === 0 || emailViewerQueueIndex < 0;
+          }
+
+          function persistEmailViewerQueue() {
+            const trimmed = pruneEmailViewerEntries(emailViewerQueue).slice(-emailViewerQueueLimit);
+            emailViewerQueue.length = 0;
+            for (const item of trimmed) {
+              emailViewerQueue.push(item);
+            }
+            if (emailViewerQueue.length === 0) {
+              localStorage.removeItem(emailViewerQueueStorageKey);
+              emailViewerQueueIndex = -1;
+              renderEmailViewerQueueNav();
+              return;
+            }
+            if (emailViewerQueueIndex >= emailViewerQueue.length) {
+              emailViewerQueueIndex = emailViewerQueue.length - 1;
+            }
+            localStorage.setItem(emailViewerQueueStorageKey, JSON.stringify(emailViewerQueue));
+            renderEmailViewerQueueNav();
+          }
+
+          function loadEmailViewerQueue() {
+            let parsed = null;
+            try {
+              parsed = JSON.parse(localStorage.getItem(emailViewerQueueStorageKey) || "[]");
+            } catch {
+              parsed = [];
+            }
+            if (!Array.isArray(parsed)) {
+              parsed = [];
+            }
+            const normalized = parsed
+              .map(normalizeEmailViewerEntry)
+              .filter(function (entry) { return entry !== null; });
+            const pruned = pruneEmailViewerEntries(normalized).slice(-emailViewerQueueLimit);
+            emailViewerQueue.length = 0;
+            for (const item of pruned) {
+              emailViewerQueue.push(item);
+            }
+            if (emailViewerQueue.length > 0) {
+              emailViewerQueueIndex = emailViewerQueue.length - 1;
+            } else {
+              emailViewerQueueIndex = -1;
+            }
+            persistEmailViewerQueue();
+          }
+
+          function loadReplyHistory() {
+            let parsed = null;
+            try {
+              parsed = JSON.parse(localStorage.getItem(replyHistoryStorageKey) || "[]");
+            } catch {
+              parsed = [];
+            }
+            if (!Array.isArray(parsed)) {
+              parsed = [];
+            }
+            const normalized = parsed
+              .map(normalizeHistoryEntry)
+              .filter(function (entry) {
+                return entry !== null;
+              });
+            const pruned = pruneHistoryEntries(normalized).slice(-replyHistoryLimit);
+            replyHistory.length = 0;
+            for (const item of pruned) {
+              replyHistory.push(item);
+            }
+            persistReplyHistory();
+            if (replyHistory.length > 0) {
+              // Start on a clean panel after reload, while keeping history navigable.
+              replyHistoryIndex = replyHistory.length;
+            } else {
+              replyHistoryIndex = -1;
+            }
+          }
+
+          function renderReplyHistoryEntry(entry) {
+            if (!entry || typeof entry !== "object") {
+              promptValue.textContent = "";
+              replyValue.textContent = "";
+              resetEmailViewer();
+              setActiveViewerTab("reply");
+              updateReplyHistoryButtons();
+              return;
+            }
+            promptValue.textContent = typeof entry.prompt === "string" ? entry.prompt : "";
+            renderReply(entry.message || "no reply", entry.actions);
+            updateReplyHistoryButtons();
+          }
+
+          function pushReplyHistoryEntry(entry) {
+            const normalized = normalizeHistoryEntry({
+              ...entry,
+              createdAt: Date.now(),
+            });
+            if (!normalized) {
+              return;
+            }
+            replyHistory.push(normalized);
+            while (replyHistory.length > replyHistoryLimit) {
+              replyHistory.shift();
+            }
+            replyHistoryIndex = replyHistory.length - 1;
+            persistReplyHistory();
+            renderReplyHistoryEntry(replyHistory[replyHistoryIndex]);
+          }
+
+          function triggerAttachmentDownload(item) {
+            if (!item || typeof item !== "object") {
+              return false;
+            }
+            const filename = typeof item.filename === "string" ? item.filename : "attachment.bin";
+            const contentType = typeof item.contentType === "string" ? item.contentType : "application/octet-stream";
+            const dataBase64 = typeof item.dataBase64 === "string" ? item.dataBase64 : "";
+            if (!dataBase64) {
+              return false;
+            }
+            const blob = b64ToBlob(dataBase64, contentType);
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = filename;
+            link.rel = "noopener";
+            link.style.display = "none";
+            document.body.appendChild(link);
+            try {
+              link.click();
+            } catch {
+              document.body.removeChild(link);
+              URL.revokeObjectURL(url);
+              return false;
+            }
+            // Keep object URL alive long enough for slower browsers to begin download.
+            setTimeout(function () {
+              try {
+                document.body.removeChild(link);
+              } catch {
+                // no-op
+              }
+              URL.revokeObjectURL(url);
+            }, 120000);
+            return true;
+          }
+
+          function requestEmailViewerAttachmentDownload(command, options) {
+            const text = typeof command === "string" ? command.trim() : "";
+            if (!text) {
+              pushEvent("email-viewer", "attachment command missing");
+              return;
+            }
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+              pushEvent("email-viewer", "socket not connected");
+              return;
+            }
+            pendingEmailViewerDownloadRequest = {
+              requestedAt: Date.now(),
+              preferredFilename:
+                options && typeof options.preferredFilename === "string" ? options.preferredFilename.trim().toLowerCase() : "",
+              attachmentId:
+                options && typeof options.attachmentId === "string" ? options.attachmentId.trim() : "",
+              attempts: 1,
+            };
+            setWaiting("attachment download");
+            socket.send(JSON.stringify({ type: "message", message: text, requestId: `evd-${Math.random().toString(36).slice(2)}` }));
+          }
+
+          function getAttachmentCommandFromActions(actions, preferredFilename) {
+            if (!Array.isArray(actions) || actions.length === 0) {
+              return "";
+            }
+            const preferred = String(preferredFilename || "").trim().toLowerCase();
+            let firstMatch = "";
+            for (const item of actions) {
+              if (!item || typeof item !== "object") {
+                continue;
+              }
+              const text = typeof item.text === "string" ? item.text.trim() : "";
+              if (!text) {
+                continue;
+              }
+              const id = extractAttachmentDownloadIdFromCommand(text);
+              if (!id) {
+                continue;
+              }
+              if (!firstMatch) {
+                firstMatch = text;
+              }
+              const label = typeof item.label === "string" ? item.label.trim().toLowerCase() : "";
+              if (preferred && (text.toLowerCase().includes(preferred) || label.includes(preferred))) {
+                return text;
+              }
+            }
+            return firstMatch;
+          }
+
+          function getAttachmentCommandFromMessage(message, preferredFilename) {
+            const lines = String(message || "").split(/\r?\n/);
+            const preferred = String(preferredFilename || "").trim().toLowerCase();
+            let firstId = "";
+            for (const line of lines) {
+              const match = line.match(/^\s*-\s*(\d+):\s*(.+?)\s*(\(|\||$)/);
+              if (!match) {
+                continue;
+              }
+              const id = String(match[1] || "").trim();
+              const name = String(match[2] || "").trim().toLowerCase();
+              if (!id) {
+                continue;
+              }
+              if (!firstId) {
+                firstId = id;
+              }
+              if (preferred && name.includes(preferred)) {
+                return `display attachment ${id}`;
+              }
+            }
+            return firstId ? `display attachment ${firstId}` : "";
+          }
+
+          function b64ToBlob(base64, contentType) {
+            const binary = atob(base64);
+            const sliceSize = 1024;
+            const byteArrays = [];
+            for (let offset = 0; offset < binary.length; offset += sliceSize) {
+              const slice = binary.slice(offset, offset + sliceSize);
+              const byteNumbers = new Array(slice.length);
+              for (let i = 0; i < slice.length; i += 1) {
+                byteNumbers[i] = slice.charCodeAt(i);
+              }
+              byteArrays.push(new Uint8Array(byteNumbers));
+            }
+            return new Blob(byteArrays, { type: contentType || "application/octet-stream" });
+          }
+
+          function decodeActionAttributes(raw) {
+            const attrs = {};
+            const pattern = /([a-zA-Z_]+)\s*=\s*"((?:\\.|[^"])*)"/g;
+            let match;
+            while ((match = pattern.exec(raw)) !== null) {
+              const key = String(match[1] || "").trim().toLowerCase();
+              const value = String(match[2] || "").replace(/\\"/g, "\"").replace(/\\\\/g, "\\");
+              if (key) {
+                attrs[key] = value;
+              }
+            }
+            return attrs;
+          }
+
+          function parseInlineReplySegments(replyText) {
+            const segments = [];
+            const tokenPattern = /\[action:prefill\s+([^\]]+)\]/gi;
+            let lastIndex = 0;
+            let match;
+            while ((match = tokenPattern.exec(replyText)) !== null) {
+              const tokenStart = match.index;
+              const tokenEnd = tokenPattern.lastIndex;
+              if (tokenStart > lastIndex) {
+                segments.push({ type: "text", text: replyText.slice(lastIndex, tokenStart) });
+              }
+              const attrs = decodeActionAttributes(String(match[1] || ""));
+              const text = typeof attrs.text === "string" ? attrs.text.trim() : "";
+              const label = typeof attrs.label === "string" ? attrs.label.trim() : "";
+              if (text) {
+                segments.push({
+                  type: "prefill",
+                  label: label || "Use Suggested Reply",
+                  text,
+                });
+              } else {
+                segments.push({ type: "text", text: replyText.slice(tokenStart, tokenEnd) });
+              }
+              lastIndex = tokenEnd;
+            }
+            if (lastIndex < replyText.length) {
+              segments.push({ type: "text", text: replyText.slice(lastIndex) });
+            }
+            if (segments.length === 0) {
+              segments.push({ type: "text", text: replyText });
+            }
+            return segments;
+          }
+
+          function isReadActionText(value) {
+            const raw = (value || "").toLowerCase();
+            return (raw.includes("read") && (raw.includes("mail") || raw.includes("email"))) ||
+              raw.includes("check mail") ||
+              raw.includes("check email");
+          }
+
+          function isReplyActionText(value) {
+            const raw = (value || "").toLowerCase();
+            return /\breply\b/.test(raw);
+          }
+
+          function parseEmailCards(replyText, actions) {
+            const segments = parseInlineReplySegments(replyText);
+            const cards = [];
+            const byId = {};
+            let currentCard = null;
+
+            function ensureCard(id) {
+              const key = String(id || "").trim();
+              if (!key) {
+                return null;
+              }
+              if (byId[key]) {
+                return byId[key];
+              }
+              const card = {
+                id: key,
+                from: "",
+                to: "",
+                subject: "",
+                received: "",
+                folder: "",
+                subfolder: "",
+                folderPath: "",
+                attachments: [],
+                attachmentIds: [],
+                readCommand: "",
+                replyCommand: "",
+                attachmentCommand: "",
+                summary: "",
+              };
+              byId[key] = card;
+              cards.push(card);
+              return card;
+            }
+
+            for (const segment of segments) {
+              if (!segment || typeof segment !== "object") {
+                continue;
+              }
+              if (segment.type === "text") {
+                const lines = String(segment.text || "").split(/\r?\n/);
+                for (const line of lines) {
+                  const idMatch = line.match(/^\s*ID:\s*([0-9]+)\s*$/i);
+                  if (idMatch) {
+                    currentCard = ensureCard(idMatch[1]);
+                    continue;
+                  }
+                  if (!currentCard) {
+                    continue;
+                  }
+                  const fromMatch = line.match(/^\s*From:\s*(.+?)\s*$/i);
+                  if (fromMatch) {
+                    currentCard.from = String(fromMatch[1] || "").trim();
+                    continue;
+                  }
+                  const toMatch = line.match(/^\s*(To|Sent To):\s*(.+?)\s*$/i);
+                  if (toMatch) {
+                    currentCard.to = String(toMatch[2] || "").trim();
+                    continue;
+                  }
+                  const subjectMatch = line.match(/^\s*Subject:\s*(.+?)\s*$/i);
+                  if (subjectMatch) {
+                    currentCard.subject = String(subjectMatch[1] || "").trim();
+                    continue;
+                  }
+                  const receivedMatch = line.match(/^\s*Received:\s*(.+?)\s*$/i);
+                  if (receivedMatch) {
+                    currentCard.received = String(receivedMatch[1] || "").trim();
+                    continue;
+                  }
+                  const summaryMatch = line.match(/^\s*Summary:\s*(.+?)\s*$/i);
+                  if (summaryMatch) {
+                    currentCard.summary = String(summaryMatch[1] || "").trim();
+                    continue;
+                  }
+                  const folderMatch = line.match(/^\s*Folder:\s*(.+?)\s*$/i);
+                  if (folderMatch) {
+                    currentCard.folder = String(folderMatch[1] || "").trim();
+                    continue;
+                  }
+                  const subfolderMatch = line.match(/^\s*Subfolder:\s*(.+?)\s*$/i);
+                  if (subfolderMatch) {
+                    currentCard.subfolder = String(subfolderMatch[1] || "").trim();
+                    continue;
+                  }
+                  const folderPathMatch = line.match(/^\s*(Folder Path|Path):\s*(.+?)\s*$/i);
+                  if (folderPathMatch) {
+                    currentCard.folderPath = String(folderPathMatch[2] || "").trim();
+                    const parts = currentCard.folderPath.split(/[\\/]/).map(function (p) { return p.trim(); }).filter(function (p) { return p.length > 0; });
+                    if (!currentCard.folder && parts.length > 0) {
+                      currentCard.folder = parts[0];
+                    }
+                    if (!currentCard.subfolder && parts.length > 1) {
+                      currentCard.subfolder = parts.slice(1).join(" / ");
+                    }
+                    continue;
+                  }
+                  const attachmentsMatch = line.match(/^\s*Attachments:\s*(.+?)\s*$/i);
+                  if (attachmentsMatch) {
+                    const raw = String(attachmentsMatch[1] || "").trim();
+                    if (raw && !/^none$/i.test(raw)) {
+                      currentCard.attachments = raw
+                        .split(",")
+                        .map((item) => String(item || "").trim())
+                        .filter((item) => item.length > 0);
+                    }
+                    continue;
+                  }
+                }
+                continue;
+              }
+              if (segment.type === "prefill" && currentCard) {
+                const command = String(segment.text || "").trim();
+                const lowered = command.toLowerCase();
+                const attachmentId = extractAttachmentDownloadIdFromCommand(command);
+                if (attachmentId) {
+                  if (!currentCard.attachmentIds.includes(attachmentId)) {
+                    currentCard.attachmentIds.push(attachmentId);
+                  }
+                } else if (isReadActionText(lowered)) {
+                  currentCard.readCommand = command;
+                } else if (isReplyActionText(lowered)) {
+                  currentCard.replyCommand = command;
+                } else if (isAttachmentActionText(lowered)) {
+                  currentCard.attachmentCommand = command;
+                }
+              }
+            }
+
+            if (Array.isArray(actions) && cards.length > 0) {
+              for (const item of actions) {
+                if (!item || typeof item !== "object") {
+                  continue;
+                }
+                const type = typeof item.type === "string" ? item.type.trim().toLowerCase() : "";
+                const text = typeof item.text === "string" ? item.text.trim() : "";
+                if (type !== "prefill" || !text) {
+                  continue;
+                }
+                const lowered = text.toLowerCase();
+                const target = cards.find((card) => !card.readCommand) || cards[0];
+                const attachmentId = extractAttachmentDownloadIdFromCommand(text);
+                if (attachmentId) {
+                  const withCapacity = cards.find((card) => card.attachmentIds.length < Math.max(1, card.attachments.length));
+                  const card = withCapacity || cards[cards.length - 1];
+                  if (!card.attachmentIds.includes(attachmentId)) {
+                    card.attachmentIds.push(attachmentId);
+                  }
+                  continue;
+                }
+                if (isReadActionText(lowered)) {
+                  if (!target.readCommand) {
+                    target.readCommand = text;
+                  }
+                } else if (isReplyActionText(lowered)) {
+                  const replyTarget = cards.find((card) => !card.replyCommand) || cards[0];
+                  if (!replyTarget.replyCommand) {
+                    replyTarget.replyCommand = text;
+                  }
+                } else if (isAttachmentActionText(lowered)) {
+                  const attachTarget = cards.find((card) => !card.attachmentCommand) || cards[0];
+                  if (!attachTarget.attachmentCommand) {
+                    attachTarget.attachmentCommand = text;
+                  }
+                }
+              }
+            }
+
+            return cards;
+          }
+
+          function buildEmailSummary(card) {
+            if (card.summary) {
+              return card.summary;
+            }
+            const parts = [];
+            if (card.subject) {
+              parts.push("Subject: " + card.subject);
+            }
+            if (card.from) {
+              parts.push("From: " + card.from);
+            }
+            if (card.to) {
+              parts.push("To: " + card.to);
+            }
+            const folderParts = [];
+            if (card.folder) {
+              folderParts.push(card.folder);
+            }
+            if (card.subfolder) {
+              folderParts.push(card.subfolder);
+            }
+            if (folderParts.length > 0) {
+              parts.push("Folder: " + folderParts.join(" / "));
+            }
+            if (card.received) {
+              parts.push("Received: " + card.received);
+            }
+            if (card.attachments.length > 0) {
+              parts.push("Attachments: " + card.attachments.length);
+            }
+            return parts.length > 0 ? parts.join("\n") : "No summary available for this email.";
+          }
+
+          function renderCurrentEmailViewerEntry() {
+            if (emailViewerQueue.length === 0 || emailViewerQueueIndex < 0 || emailViewerQueueIndex >= emailViewerQueue.length) {
+              resetEmailViewer();
+              return;
+            }
+            const card = emailViewerQueue[emailViewerQueueIndex];
+            if (!card || typeof card !== "object") {
+              resetEmailViewer();
+              return;
+            }
+            const metaLines = [];
+            metaLines.push("ID: " + card.id);
+            if (card.from) metaLines.push("From: " + card.from);
+            if (card.to) metaLines.push("To: " + card.to);
+            if (card.subject) metaLines.push("Subject: " + card.subject);
+            if (card.received) metaLines.push("Received: " + card.received);
+            const folderParts = [];
+            if (card.folder) folderParts.push(card.folder);
+            if (card.subfolder) folderParts.push(card.subfolder);
+            if (folderParts.length > 0) metaLines.push("Folder: " + folderParts.join(" / "));
+            metaLines.push("");
+            metaLines.push("Attachments: " + (card.attachments.length > 0 ? card.attachments.join(", ") : "None"));
+            const bodyText =
+              (typeof card.body === "string" && card.body.trim() ? card.body.trim() : "") ||
+              getRememberedEmailBody(card.id);
+            let emailHtml = escapeHtml(metaLines.join("\n")).replace(/\r?\n/g, "<br>");
+            if (bodyText) {
+              const sourceBody = getSourceHtmlOrText(bodyText);
+              if (sourceBody.isHtml) {
+                emailHtml += "<br><br><strong>Body:</strong><br>" + sourceBody.html;
+              } else {
+                emailHtml += "<br><br><strong>Body:</strong><br>" + escapeHtml(sourceBody.text).replace(/\r?\n/g, "<br>");
+              }
+            }
+            emailViewerValue.innerHTML = emailHtml;
+            emailViewerValue.classList.remove("email-viewer-empty");
+
+            emailViewerAttachments.textContent = "";
+            for (let i = 0; i < card.attachments.length; i += 1) {
+              const name = card.attachments[i];
+              const id = card.attachmentIds[i] || "";
+              const row = document.createElement("div");
+              row.className = "email-viewer-attachment-row";
+
+              const nameEl = document.createElement("span");
+              nameEl.textContent = name + " (" + guessMimeTypeFromFilename(name) + ")";
+
+              const action = document.createElement("span");
+              if (id) {
+                const tag = document.createElement("button");
+                tag.type = "button";
+                tag.className = "attachment-id-tag";
+                tag.textContent = "ID: " + id;
+                tag.addEventListener("click", function () {
+                  requestEmailViewerAttachmentDownload("display attachment " + id, {
+                    preferredFilename: name,
+                    attachmentId: id,
+                  });
+                });
+                action.appendChild(tag);
+              } else if (card.attachmentCommand) {
+                const btn = document.createElement("button");
+                btn.type = "button";
+                btn.className = "attachment-id-tag";
+                btn.textContent = "Download";
+                btn.addEventListener("click", function () {
+                  requestEmailViewerAttachmentDownload(card.attachmentCommand, {
+                    preferredFilename: name,
+                  });
+                });
+                action.appendChild(btn);
+              }
+
+              row.appendChild(nameEl);
+              row.appendChild(action);
+              emailViewerAttachments.appendChild(row);
+            }
+
+            const baseSummary = buildEmailSummary(card);
+            const rememberedSummary = getRememberedEmailSummary(card.id);
+            const summaryParts = [];
+
+            if (rememberedSummary) {
+              const aiText = normalizeSummaryDisplayText(rememberedSummary);
+              summaryParts.push(
+                '<div><strong class="email-summary-ai-label">AI Summary:</strong><br><div class="email-summary-ai-text">' +
+                  escapeHtml(aiText).replace(/\r?\n/g, "<br>") +
+                  "</div></div>",
+              );
+            }
+
+            const base = getSourceHtmlOrText(baseSummary);
+            const baseHtml = base.isHtml ? base.html : escapeHtml(base.text).replace(/\r?\n/g, "<br>");
+            if (summaryParts.length > 0) {
+              summaryParts.push('<div class="email-summary-divider"></div>');
+            }
+            summaryParts.push('<div class="email-summary-meta">' + baseHtml + "</div>");
+
+            emailSummaryValue.innerHTML = summaryParts.join("");
+            emailSummaryValue.classList.remove("email-viewer-empty");
+            renderEmailViewerQueueNav();
+            setActiveViewerTab("email");
+          }
+
+          function openEmailViewer(card) {
+            const normalized = normalizeEmailViewerEntry({
+              ...card,
+              createdAt: Date.now(),
+            });
+            if (!normalized) {
+              return;
+            }
+            const added = addEmailViewerCard(normalized, true);
+            const target =
+              emailViewerQueueIndex >= 0 && emailViewerQueueIndex < emailViewerQueue.length
+                ? emailViewerQueue[emailViewerQueueIndex]
+                : normalized;
+            if (shouldFetchEmailViewerDetails(target) && !pendingEmailViewerDetailsRequest && socket && socket.readyState === WebSocket.OPEN) {
+              setEmailViewerBusy(true, "Rendering...");
+              pendingEmailViewerDetailsRequest = {
+                emailId: target.id,
+                readCommand: target.readCommand,
+                attempts: 1,
+              };
+              socket.send(
+                JSON.stringify({
+                  type: "message",
+                  message: target.readCommand,
+                  requestId: `evr-${Math.random().toString(36).slice(2)}`,
+                }),
+              );
+            } else if (added) {
+              setEmailViewerBusy(false);
+              renderCurrentEmailViewerEntry();
+            }
+          }
+
+          function addEmailViewerCard(normalizedCard, focusViewer) {
+            const normalized = normalizeEmailViewerEntry(normalizedCard);
+            if (!normalized) {
+              return false;
+            }
+            const existingIndex = emailViewerQueue.findIndex(function (item) {
+              return item.id === normalized.id;
+            });
+            if (existingIndex >= 0) {
+              if (focusViewer) {
+                emailViewerQueueIndex = existingIndex;
+                persistEmailViewerQueue();
+                renderCurrentEmailViewerEntry();
+              }
+              return false;
+            }
+            emailViewerQueue.push(normalized);
+            while (emailViewerQueue.length > emailViewerQueueLimit) {
+              emailViewerQueue.shift();
+            }
+            if (focusViewer) {
+              emailViewerQueueIndex = emailViewerQueue.length - 1;
+            } else if (emailViewerQueueIndex < 0) {
+              emailViewerQueueIndex = emailViewerQueue.length - 1;
+            }
+            persistEmailViewerQueue();
+            if (focusViewer) {
+              renderCurrentEmailViewerEntry();
+            }
+            return true;
+          }
+
+          function isAddAllToEmailViewerCommand(text) {
+            const normalized = String(text || "").trim().toLowerCase();
+            if (!normalized) {
+              return false;
+            }
+            return normalized === "add all to email viewer" || normalized === "add all to viewer";
+          }
+
+          function addAllCurrentResultEmailsToViewer() {
+            const currentEntry =
+              replyHistoryIndex >= 0 && replyHistoryIndex < replyHistory.length
+                ? replyHistory[replyHistoryIndex]
+                : null;
+            const fromCurrentView = currentEntry && typeof currentEntry === "object"
+              ? parseEmailCards(currentEntry.message || "", currentEntry.actions)
+              : [];
+            const sourceCards = fromCurrentView.length > 0 ? fromCurrentView : currentResultEmailCards;
+            if (!Array.isArray(sourceCards) || sourceCards.length === 0) {
+              return 0;
+            }
+            let added = 0;
+            for (const card of sourceCards) {
+              if (addEmailViewerCard({ ...card, createdAt: Date.now() }, false)) {
+                added += 1;
+              }
+            }
+            renderEmailViewerQueueNav();
+            pushEvent("email-viewer", `added ${added} email(s) from result`);
+            return added;
+          }
+
+          function renderEmailList(cards) {
+            replyValue.textContent = "";
+            currentResultEmailCards = Array.isArray(cards) ? cards.map(function (card) { return { ...card }; }) : [];
+            const list = document.createElement("div");
+            list.className = "email-list";
+            for (const card of cards) {
+              const item = document.createElement("div");
+              item.className = "email-list-item";
+
+              const id = document.createElement("div");
+              id.className = "email-list-id";
+              id.textContent = "ID: " + card.id;
+              item.appendChild(id);
+
+              if (card.from) {
+                const from = document.createElement("div");
+                from.className = "email-list-line";
+                from.textContent = "From: " + card.from;
+                item.appendChild(from);
+              }
+              if (card.to) {
+                const to = document.createElement("div");
+                to.className = "email-list-line";
+                to.textContent = "To: " + card.to;
+                item.appendChild(to);
+              }
+              if (card.subject) {
+                const subject = document.createElement("div");
+                subject.className = "email-list-line";
+                subject.textContent = "Subject: " + card.subject;
+                item.appendChild(subject);
+              }
+              if (card.received) {
+                const received = document.createElement("div");
+                received.className = "email-list-line";
+                received.textContent = "Received: " + card.received;
+                item.appendChild(received);
+              }
+              {
+                const folderParts = [];
+                if (card.folder) folderParts.push(card.folder);
+                if (card.subfolder) folderParts.push(card.subfolder);
+                if (folderParts.length > 0) {
+                  const folder = document.createElement("div");
+                  folder.className = "email-list-line";
+                  folder.textContent = "Folder: " + folderParts.join(" / ");
+                  item.appendChild(folder);
+                }
+              }
+              const attachments = document.createElement("div");
+              attachments.className = "email-list-line";
+              attachments.textContent = "Attachments: " + (card.attachments.length > 0 ? card.attachments.join(", ") : "None");
+              item.appendChild(attachments);
+
+              const buttonEl = document.createElement("button");
+              buttonEl.type = "button";
+              buttonEl.className = "email-view-button";
+              buttonEl.textContent = "\u{1F4E8} View in Email";
+              buttonEl.addEventListener("click", function () {
+                openEmailViewer(card);
+              });
+              item.appendChild(buttonEl);
+
+              list.appendChild(item);
+            }
+            replyValue.appendChild(list);
+            return true;
+          }
+
+          function parseAttachmentDetailLine(line) {
+            const match = String(line || "").match(/^\s*-\s*(\d+):\s*(.+?)\s*\|\s*Download Link:\s*(\S+)\s*$/i);
+            if (!match) {
+              return null;
+            }
+            const attachmentId = String(match[1] || "").trim();
+            const name = String(match[2] || "").trim();
+            const href = String(match[3] || "").trim();
+            if (!attachmentId || !name) {
+              return null;
+            }
+            return { attachmentId, name, href };
+          }
+
+          function extractAttachmentDownloadIdFromCommand(text) {
+            const raw = typeof text === "string" ? text.trim() : "";
+            if (!raw) {
+              return "";
+            }
+            const match = raw.match(/\bdisplay\s+attachment\s+(\d+)\b/i);
+            return match ? String(match[1] || "").trim() : "";
+          }
+
+          function isAttachmentActionText(value) {
+            const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
+            if (!raw) {
+              return false;
+            }
+            return raw.includes("attachment") || raw.includes("attachments") || /\bpdf\b/.test(raw);
+          }
+
+          function guessMimeTypeFromFilename(filename) {
+            const lower = String(filename || "").trim().toLowerCase();
+            if (!lower) {
+              return "application/octet-stream";
+            }
+            if (lower.endsWith(".png")) return "image/png";
+            if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+            if (lower.endsWith(".gif")) return "image/gif";
+            if (lower.endsWith(".webp")) return "image/webp";
+            if (lower.endsWith(".pdf")) return "application/pdf";
+            if (lower.endsWith(".doc")) return "application/msword";
+            if (lower.endsWith(".docx")) return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+            if (lower.endsWith(".xls")) return "application/vnd.ms-excel";
+            if (lower.endsWith(".xlsx")) return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+            if (lower.endsWith(".txt")) return "text/plain";
+            return "application/octet-stream";
+          }
+
+          function collectAttachmentActionQueue(actions) {
+            if (!Array.isArray(actions) || actions.length === 0) {
+              return [];
+            }
+            const queue = [];
+            for (const item of actions) {
+              if (!item || typeof item !== "object") {
+                continue;
+              }
+              const type = typeof item.type === "string" ? item.type.trim().toLowerCase() : "";
+              const text = typeof item.text === "string" ? item.text.trim() : "";
+              if (type !== "prefill" || !text) {
+                continue;
+              }
+              const id = extractAttachmentDownloadIdFromCommand(text);
+              if (id) {
+                queue.push(id);
+              }
+            }
+            return queue;
+          }
+
+          function collectAttachmentSegmentQueue(segments) {
+            if (!Array.isArray(segments) || segments.length === 0) {
+              return [];
+            }
+            const queue = [];
+            for (const segment of segments) {
+              if (!segment || segment.type !== "prefill") {
+                continue;
+              }
+              const text = typeof segment.text === "string" ? segment.text.trim() : "";
+              const id = extractAttachmentDownloadIdFromCommand(text);
+              if (id) {
+                queue.push(id);
+              }
+            }
+            return queue;
+          }
+
+          function appendTextWithAttachmentTags(container, text, attachmentIdQueue) {
+            const raw = typeof text === "string" ? text : "";
+            if (!raw || !raw.includes("Download Link:")) {
+              if (raw && raw.includes("Attachments:") && Array.isArray(attachmentIdQueue) && attachmentIdQueue.length > 0) {
+                // keep processing below for attachment line enrichment
+              } else {
+                container.appendChild(document.createTextNode(raw));
+                return;
+              }
+            }
+            if (!raw) {
+              return;
+            }
+            const lines = raw.split(/\r?\n/);
+            for (let i = 0; i < lines.length; i += 1) {
+              const line = lines[i];
+              const attachmentSummary = String(line || "").match(/^\s*Attachments:\s*(.+?)\s*$/i);
+              if (attachmentSummary && Array.isArray(attachmentIdQueue) && attachmentIdQueue.length > 0) {
+                const filenamesRaw = String(attachmentSummary[1] || "").trim();
+                const lower = filenamesRaw.toLowerCase();
+                if (filenamesRaw && lower !== "none" && lower !== "n/a" && lower !== "-") {
+                  const names = filenamesRaw
+                    .split(",")
+                    .map((item) => String(item || "").trim())
+                    .filter((item) => item.length > 0);
+                  if (names.length > 0) {
+                    container.appendChild(document.createTextNode("Attachments: " + names.join(", ")));
+                    container.appendChild(document.createTextNode("\n"));
+                    container.appendChild(document.createTextNode("Attachment Details:"));
+                    container.appendChild(document.createTextNode("\n"));
+                    for (let idx = 0; idx < names.length; idx += 1) {
+                      const nameText = names[idx];
+                      const row = document.createElement("div");
+                      row.className = "reply-attachment-item";
+
+                      const name = document.createElement("span");
+                      name.className = "reply-attachment-name";
+                      name.textContent = nameText + " (" + guessMimeTypeFromFilename(nameText) + ")";
+
+                      const meta = document.createElement("span");
+                      meta.className = "reply-attachment-meta";
+
+                      const id = attachmentIdQueue.length > 0 ? attachmentIdQueue.shift() : "";
+                      if (id) {
+                        const tag = document.createElement("button");
+                        tag.type = "button";
+                        tag.className = "attachment-id-tag";
+                        tag.textContent = "ID: " + id;
+                        tag.addEventListener("click", function () {
+                          pendingAttachmentAutoDownloadId = id;
+                          textarea.value = "display attachment " + id;
+                          form.requestSubmit();
+                        });
+                        meta.appendChild(tag);
+                      }
+
+                      row.appendChild(name);
+                      row.appendChild(meta);
+                      container.appendChild(row);
+                    }
+                    if (i < lines.length - 1) {
+                      container.appendChild(document.createTextNode("\n"));
+                    }
+                    continue;
+                  }
+                }
+              }
+              const parsed = parseAttachmentDetailLine(line);
+              if (parsed) {
+                const row = document.createElement("div");
+                row.className = "reply-attachment-item";
+
+                const name = document.createElement("span");
+                name.className = "reply-attachment-name";
+                name.textContent = parsed.name;
+
+                const meta = document.createElement("span");
+                meta.className = "reply-attachment-meta";
+
+                const href = parsed.href;
+                let tag;
+                if (href !== "#" && href.length > 0) {
+                  tag = document.createElement("a");
+                  tag.href = href;
+                  tag.target = "_blank";
+                  tag.rel = "noopener noreferrer";
+                } else {
+                  tag = document.createElement("button");
+                  tag.type = "button";
+                  tag.addEventListener("click", function () {
+                    pendingAttachmentAutoDownloadId = parsed.attachmentId;
+                    textarea.value = "display attachment " + parsed.attachmentId;
+                    form.requestSubmit();
+                  });
+                }
+                tag.className = "attachment-id-tag";
+                tag.textContent = "ID: " + parsed.attachmentId;
+
+                meta.appendChild(tag);
+                row.appendChild(name);
+                row.appendChild(meta);
+                container.appendChild(row);
+              } else {
+                container.appendChild(document.createTextNode(line));
+              }
+              if (i < lines.length - 1) {
+                container.appendChild(document.createTextNode("\n"));
+              }
+            }
+          }
+
+          function createPrefillButton(label, text) {
+            function getActionPresentation(rawLabel, rawText) {
+              const labelText = (rawLabel || "").toLowerCase();
+              const payloadText = (rawText || "").toLowerCase();
+              const combined = (labelText + " " + payloadText).trim();
+              if (combined.includes("attachment")) {
+                return { icon: "📎", title: "Show Attachments" };
+              }
+              if (combined.includes("reply")) {
+                return { icon: "↩", title: "Reply" };
+              }
+              if (
+                (combined.includes("read") && (combined.includes("email") || combined.includes("mail"))) ||
+                combined.includes("check mail") ||
+                combined.includes("check email")
+              ) {
+                return { icon: "✉", title: "Read Email" };
+              }
+              return { icon: "⚡", title: rawLabel || "Quick Action" };
+            }
+
+            const actionButton = document.createElement("button");
+            actionButton.type = "button";
+            actionButton.className = "prefill-button";
+            const presentation = getActionPresentation(label, text);
+            const iconSpan = document.createElement("span");
+            iconSpan.className = "prefill-icon";
+            iconSpan.textContent = presentation.icon;
+            const titleSpan = document.createElement("span");
+            titleSpan.textContent = presentation.title;
+            actionButton.appendChild(iconSpan);
+            actionButton.appendChild(titleSpan);
+            actionButton.addEventListener("click", function () {
+              textarea.value = text;
+              textarea.focus();
+              textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+              pushEvent("prefill", presentation.title);
+              if (presentation.title === "Read Email") {
+                form.requestSubmit();
+              }
+            });
+            return actionButton;
+          }
+
+          function renderReply(message, actions) {
+            const replyText = typeof message === "string" && message.trim() ? message : "no reply";
+            replyValue.textContent = "";
+            resetEmailViewer();
+            setActiveViewerTab("reply");
+            const cards = parseEmailCards(replyText, actions);
+            if (cards.length > 0) {
+              renderEmailList(cards);
+              return;
+            }
+            currentResultEmailCards = [];
+            const segments = parseInlineReplySegments(replyText);
+            const attachmentIdQueue = [
+              ...collectAttachmentSegmentQueue(segments),
+              ...collectAttachmentActionQueue(actions),
+            ];
+            const hasDirectAttachmentIds = attachmentIdQueue.length > 0;
+            let hasInlineActions = false;
+            for (let i = 0; i < segments.length; i += 1) {
+              const segment = segments[i];
+              if (segment.type === "text") {
+                appendTextWithAttachmentTags(replyValue, segment.text || "", attachmentIdQueue);
+                continue;
+              }
+              if (segment.type === "prefill") {
+                hasInlineActions = true;
+                const list = document.createElement("span");
+                list.className = "action-list action-list-inline";
+                let j = i;
+                while (j < segments.length) {
+                  const item = segments[j];
+                  if (item.type === "prefill") {
+                    const attachmentDownloadId = extractAttachmentDownloadIdFromCommand(item.text);
+                    const labelText = typeof item.label === "string" ? item.label : "";
+                    const payloadText = typeof item.text === "string" ? item.text : "";
+                    const isAttachmentAction =
+                      Boolean(attachmentDownloadId) ||
+                      isAttachmentActionText(labelText) ||
+                      isAttachmentActionText(payloadText);
+                    if (!isAttachmentAction || !hasDirectAttachmentIds) {
+                      list.appendChild(createPrefillButton(item.label, item.text));
+                    }
+                    j += 1;
+                    continue;
+                  }
+                  if (item.type === "text" && typeof item.text === "string" && item.text.trim().length === 0) {
+                    j += 1;
+                    continue;
+                  }
+                  break;
+                }
+                replyValue.appendChild(list);
+                i = j - 1;
+              }
+            }
+
+            if (hasInlineActions || !Array.isArray(actions) || actions.length === 0) {
+              return;
+            }
+
+            const list = document.createElement("div");
+            list.className = "action-list action-list-block";
+            for (const item of actions) {
+              if (!item || typeof item !== "object") {
+                continue;
+              }
+              const type = typeof item.type === "string" ? item.type.trim().toLowerCase() : "";
+              const label = typeof item.label === "string" ? item.label.trim() : "";
+              const text = typeof item.text === "string" ? item.text.trim() : "";
+              if (type !== "prefill" || !text) {
+                continue;
+              }
+              const attachmentDownloadId = extractAttachmentDownloadIdFromCommand(text);
+              const isAttachmentAction =
+                Boolean(attachmentDownloadId) ||
+                isAttachmentActionText(label) ||
+                isAttachmentActionText(text);
+              if (isAttachmentAction && hasDirectAttachmentIds) {
+                continue;
+              }
+              list.appendChild(createPrefillButton(label, text));
+            }
+
+            if (list.children.length > 0) {
+              if (replyValue.textContent && !replyValue.textContent.endsWith("\n")) {
+                replyValue.appendChild(document.createTextNode("\n"));
+              }
+              replyValue.appendChild(list);
+            }
+          }
+
+          function pushEvent(title, detail) {
+            const entry = document.createElement("div");
+            entry.className = "event";
+            const timestamp = new Date().toLocaleTimeString();
+            entry.innerHTML = "<strong>" + title + "</strong>  [" + timestamp + "]\n" + detail;
+            eventList.prepend(entry);
+          }
+
+          function setBanner(active) {
+            tabBanner.classList.toggle("active", active);
+            button.disabled = active;
+          }
+
+          function connectSocket() {
+            if (socket) {
+              socket.close();
+            }
+            socket = new WebSocket(wsUrl);
+            socket.addEventListener("open", function () {
+              setIdle();
+              stopReconnect();
+              pushEvent("socket", "connected to " + wsUrl);
+            });
+            socket.addEventListener("close", function () {
+              setWaiting("reconnect");
+              pushEvent("socket", "disconnected");
+              if (!reconnectTimer) {
+                reconnectTimer = setInterval(connectSocket, 2000);
+              }
+            });
+            socket.addEventListener("error", function () {
+              setWaiting("reconnect");
+              pushEvent("socket", "error");
+            });
+            socket.addEventListener("message", function (event) {
+              try {
+                const data = JSON.parse(event.data);
+                if (data && data.type === "reply") {
+                  if (pendingEmailViewerDownloadRequest) {
+                    const request = pendingEmailViewerDownloadRequest;
+                    if (Array.isArray(data.attachments) && data.attachments.length > 0) {
+                      const preferredName = request.preferredFilename || "";
+                      const preferredId = request.attachmentId || "";
+                      const match = data.attachments.find(function (item) {
+                        if (!item || typeof item !== "object") {
+                          return false;
+                        }
+                        const itemId = typeof item.attachmentId === "number"
+                          ? String(item.attachmentId)
+                          : typeof item.attachmentId === "string"
+                            ? item.attachmentId
+                            : "";
+                        const filename = typeof item.filename === "string" ? item.filename.trim().toLowerCase() : "";
+                        if (preferredId && itemId === preferredId) {
+                          return true;
+                        }
+                        if (preferredName && filename === preferredName) {
+                          return true;
+                        }
+                        return false;
+                      }) || data.attachments[0];
+                      if (match && triggerAttachmentDownload(match)) {
+                        pendingEmailViewerDownloadRequest = null;
+                        pushEvent("email-viewer", "attachment downloaded");
+                      } else {
+                        pendingEmailViewerDownloadRequest = null;
+                        pushEvent("email-viewer", "attachment download failed");
+                      }
+                    } else {
+                      const attempts = typeof request.attempts === "number" ? request.attempts : 1;
+                      const nextCommand =
+                        getAttachmentCommandFromActions(data.actions, request.preferredFilename) ||
+                        getAttachmentCommandFromMessage(data.msg || "", request.preferredFilename);
+                      if (nextCommand && attempts < 4 && socket && socket.readyState === WebSocket.OPEN) {
+                        pendingEmailViewerDownloadRequest = {
+                          ...request,
+                          attempts: attempts + 1,
+                        };
+                        socket.send(
+                          JSON.stringify({
+                            type: "message",
+                            message: nextCommand,
+                            requestId: `evd-${Math.random().toString(36).slice(2)}`,
+                          }),
+                        );
+                        return;
+                      }
+                      pendingEmailViewerDownloadRequest = null;
+                      pushEvent("email-viewer", "no downloadable attachment returned");
+                    }
+                    setActiveViewerTab("email");
+                    setIdle();
+                    return;
+                  }
+                  if (pendingEmailViewerDetailsRequest) {
+                    const request = pendingEmailViewerDetailsRequest;
+                    const emailId = String(request.emailId || "").trim();
+                    const details = parseEmailViewerDetailsFromStructuredReply(data, { id: emailId });
+                    const targetIndex = emailViewerQueue.findIndex(function (item) {
+                      return item && typeof item === "object" && String(item.id || "") === emailId;
+                    });
+                    if (targetIndex >= 0 && details) {
+                      const target = emailViewerQueue[targetIndex];
+                      target.to = details.to || target.to || "";
+                      target.folder = details.folder || target.folder || "";
+                      target.subfolder = details.subfolder || target.subfolder || "";
+                      target.body = details.body || target.body || "";
+                      if (details.summary) {
+                        emailSummaryMemory[emailId] = {
+                          summary: details.summary,
+                          body: target.body || "",
+                          updatedAt: Date.now(),
+                        };
+                        persistEmailSummaryMemory();
+                      }
+                      persistEmailViewerQueue();
+                      if (emailViewerQueueIndex === targetIndex) {
+                        renderCurrentEmailViewerEntry();
+                      }
+                    }
+                    // keep any detailed read response out of the main reply/history flow
+                    pendingEmailViewerDetailsRequest = null;
+                    setEmailViewerBusy(false);
+                    setActiveViewerTab("email");
+                    setIdle();
+                    return;
+                  }
+                  const structuredDetails = parseEmailViewerDetailsFromStructuredReply(data, null);
+                  if (structuredDetails && structuredDetails.id) {
+                    const memoryId = String(structuredDetails.id);
+                    const existingMemory =
+                      emailSummaryMemory[memoryId] && typeof emailSummaryMemory[memoryId] === "object"
+                        ? emailSummaryMemory[memoryId]
+                        : {};
+                    emailSummaryMemory[memoryId] = {
+                      summary: structuredDetails.summary || (typeof existingMemory.summary === "string" ? existingMemory.summary : ""),
+                      body: structuredDetails.body || (typeof existingMemory.body === "string" ? existingMemory.body : ""),
+                      updatedAt: Date.now(),
+                    };
+                    persistEmailSummaryMemory();
+
+                    const queueIndex = emailViewerQueue.findIndex(function (item) {
+                      return item && typeof item === "object" && String(item.id || "") === memoryId;
+                    });
+                    if (queueIndex >= 0) {
+                      const target = emailViewerQueue[queueIndex];
+                      target.from = structuredDetails.from || target.from || "";
+                      target.to = structuredDetails.to || target.to || "";
+                      target.subject = structuredDetails.subject || target.subject || "";
+                      target.received = structuredDetails.received || target.received || "";
+                      target.folder = structuredDetails.folder || target.folder || "";
+                      target.subfolder = structuredDetails.subfolder || target.subfolder || "";
+                      target.body = structuredDetails.body || target.body || "";
+                      persistEmailViewerQueue();
+                      if (emailViewerQueueIndex === queueIndex) {
+                        renderCurrentEmailViewerEntry();
+                      }
+                    }
+                  }
+                  const requestedAttachmentId = pendingAttachmentAutoDownloadId;
+                  pendingAttachmentAutoDownloadId = "";
+                  let attachmentsForEntry = data.attachments;
+                  if (requestedAttachmentId && Array.isArray(data.attachments) && data.attachments.length > 0) {
+                    const match = data.attachments.find(function (item) {
+                      if (!item || typeof item !== "object") {
+                        return false;
+                      }
+                      const id = typeof item.attachmentId === "number"
+                        ? String(item.attachmentId)
+                        : typeof item.attachmentId === "string"
+                          ? item.attachmentId
+                          : "";
+                      return id === requestedAttachmentId;
+                    });
+                    if (match && triggerAttachmentDownload(match)) {
+                      attachmentsForEntry = undefined;
+                    }
+                  }
+                  pushReplyHistoryEntry({
+                    prompt: pendingPromptText || promptValue.textContent || "",
+                    message: data.msg || "no reply",
+                    actions: data.actions,
+                    attachments: attachmentsForEntry,
+                  });
+                  pendingPromptText = "";
+                  if (data.notify) {
+                    void showBrowserNotification("AI Assistant Reminder", data.msg || "Notification");
+                  }
+                  if (pendingReplyPrefill) {
+                    textarea.value = pendingReplyPrefill;
+                    textarea.focus();
+                    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+                    pendingReplyPrefill = "";
+                  }
+                  pushEvent("reply", data.msg || "no reply");
+                  setIdle();
+                } else if (data && data.type === "event") {
+                  pushEvent(data.title || "event", data.detail || "");
+                  if ((data.title || "").toLowerCase() === "notify") {
+                    void showBrowserNotification("AI Assistant Reminder", data.detail || "Notification");
+                  }
+                } else if (data && data.type === "reload") {
+                  window.location.reload();
+                } else if (data && data.type === "config") {
+                  if (!openAiDirty) {
+                    openAiApiEnabled = Boolean(data.openAiApiEnabled);
+                    openAiCodexEnabled = Boolean(data.openAiCodexEnabled);
+                    codexAuthAvailable = Boolean(data.codexAuthAvailable);
+                    notifyUiEnabled = Boolean(data.notifyUiEnabled);
+                    notifyPushoverEnabled = Boolean(data.notifyPushoverEnabled);
+                    notifyWhatsappEnabled = Boolean(data.notifyWhatsappEnabled);
+                    commandExecutionEnabled = Boolean(data.commandExecutionEnabled);
+                    if (!codexAuthAvailable) {
+                      openAiCodexEnabled = false;
+                    }
+                    if (openAiApiEnabled && openAiCodexEnabled) {
+                      openAiCodexEnabled = false;
+                    }
+                    renderOpenAiToggles();
+                    renderNotifyToggles();
+                    renderExecutionToggles();
+                  }
+                }
+              } catch (error) {
+                if (pendingEmailViewerDetailsRequest) {
+                  pendingEmailViewerDetailsRequest = null;
+                  setEmailViewerBusy(false);
+                }
+                replyValue.textContent = "invalid response";
+                pushEvent("reply", "invalid response");
+                setIdle();
+              }
+            });
+          }
+
+          function stopReconnect() {
+            if (reconnectTimer) {
+              clearInterval(reconnectTimer);
+              reconnectTimer = null;
+            }
+          }
+
+          function acquireLock() {
+            if (navigator.locks && navigator.locks.request) {
+              const attempt = function () {
+                navigator.locks.request(
+                  "ai-assistant-ui",
+                  { mode: "exclusive", ifAvailable: true },
+                  function (lock) {
+                    if (!lock) {
+                      setBanner(true);
+                      if (!lockRetryTimer) {
+                        lockRetryTimer = setInterval(attempt, 3000);
+                      }
+                      return;
+                    }
+                    if (lockRetryTimer) {
+                      clearInterval(lockRetryTimer);
+                      lockRetryTimer = null;
+                    }
+                    setBanner(false);
+                    activeLock = lock;
+                    connectSocket();
+                    stopReconnect();
+                    return new Promise(function () {});
+                  },
+                );
+              };
+              attempt();
+              return;
+            }
+
+            const storageKey = "ai-assistant-ui-active";
+            const claim = function () {
+              const now = Date.now();
+              localStorage.setItem(storageKey, JSON.stringify({ tabId: tabId, ts: now }));
+            };
+            const check = function () {
+              try {
+                const raw = localStorage.getItem(storageKey);
+                if (!raw) {
+                  claim();
+                  setBanner(false);
+                  connectSocket();
+                  return;
+                }
+                const data = JSON.parse(raw);
+                if (data.tabId === tabId || Date.now() - data.ts > 4000) {
+                  claim();
+                  setBanner(false);
+                  connectSocket();
+                } else {
+                  setBanner(true);
+                }
+              } catch (error) {
+                setBanner(false);
+              }
+            };
+            claim();
+            setInterval(claim, 2000);
+            setInterval(check, 1500);
+            check();
+          }
+
+          setIdle();
+          renderOpenAiToggles();
+          void ensureBrowserNotificationPermission();
+          acquireLock();
+
+          clearEventsButton.addEventListener("click", function () {
+            eventList.innerHTML = "";
+          });
+
+          replyTabButton.addEventListener("click", function () {
+            setActiveViewerTab("reply");
+          });
+
+          emailTabButton.addEventListener("click", function () {
+            if (emailViewerQueue.length > 0 && emailViewerQueueIndex >= 0) {
+              renderCurrentEmailViewerEntry();
+              return;
+            }
+            setActiveViewerTab("email");
+          });
+
+          clearHistoryThreadButton.addEventListener("click", function () {
+            replyHistory.length = 0;
+            replyHistoryIndex = -1;
+            currentResultEmailCards = [];
+            persistReplyHistory();
+            clearResult();
+            updateReplyHistoryButtons();
+            pushEvent("history", "current thread cleared");
+          });
+
+          emailViewerPrevButton.addEventListener("click", function () {
+            if (emailViewerQueue.length === 0 || emailViewerQueueIndex <= 0) {
+              renderEmailViewerQueueNav();
+              return;
+            }
+            emailViewerQueueIndex -= 1;
+            renderCurrentEmailViewerEntry();
+          });
+
+          emailViewerNextButton.addEventListener("click", function () {
+            if (emailViewerQueue.length === 0 || emailViewerQueueIndex >= emailViewerQueue.length - 1) {
+              renderEmailViewerQueueNav();
+              return;
+            }
+            emailViewerQueueIndex += 1;
+            renderCurrentEmailViewerEntry();
+          });
+
+          emailViewerRemoveButton.addEventListener("click", function () {
+            if (emailViewerQueue.length === 0 || emailViewerQueueIndex < 0 || emailViewerQueueIndex >= emailViewerQueue.length) {
+              renderEmailViewerQueueNav();
+              return;
+            }
+            emailViewerQueue.splice(emailViewerQueueIndex, 1);
+            if (emailViewerQueue.length === 0) {
+              emailViewerQueueIndex = -1;
+            } else if (emailViewerQueueIndex >= emailViewerQueue.length) {
+              emailViewerQueueIndex = emailViewerQueue.length - 1;
+            }
+            persistEmailViewerQueue();
+            renderCurrentEmailViewerEntry();
+          });
+
+          openAiApiToggle.addEventListener("click", function () {
+            openAiApiEnabled = !openAiApiEnabled;
+            if (openAiApiEnabled) {
+              openAiCodexEnabled = false;
+            }
+            openAiDirty = true;
+            renderOpenAiToggles();
+          });
+
+          openAiCodexToggle.addEventListener("click", function () {
+            if (!codexAuthAvailable) {
+              pushEvent("config", "codex auth token missing");
+              return;
+            }
+            openAiCodexEnabled = !openAiCodexEnabled;
+            if (openAiCodexEnabled) {
+              openAiApiEnabled = false;
+            }
+            openAiDirty = true;
+            renderOpenAiToggles();
+          });
+
+          notifyUiToggle.addEventListener("click", function () {
+            notifyUiEnabled = !notifyUiEnabled;
+            openAiDirty = true;
+            renderNotifyToggles();
+          });
+
+          notifyPushoverToggle.addEventListener("click", function () {
+            notifyPushoverEnabled = !notifyPushoverEnabled;
+            openAiDirty = true;
+            renderNotifyToggles();
+          });
+
+          notifyWhatsappToggle.addEventListener("click", function () {
+            notifyWhatsappEnabled = !notifyWhatsappEnabled;
+            openAiDirty = true;
+            renderNotifyToggles();
+          });
+
+          commandExecutionToggle.addEventListener("click", function () {
+            commandExecutionEnabled = !commandExecutionEnabled;
+            openAiDirty = true;
+            renderExecutionToggles();
+          });
+
+          showEventsToggle.addEventListener("click", function () {
+            showEventsEnabled = !showEventsEnabled;
+            localStorage.setItem(eventsToggleStorageKey, showEventsEnabled ? "true" : "false");
+            renderEventsToggle();
+          });
+
+          saveConfigButton.addEventListener("click", function () {
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+              pushEvent("config", "socket not connected");
+              return;
+            }
+              socket.send(
+                JSON.stringify({
+                  type: "config-save",
+                  openAiApiEnabled: openAiApiEnabled,
+                  openAiCodexEnabled: openAiCodexEnabled,
+                  commandExecutionEnabled: commandExecutionEnabled,
+                  notifyUiEnabled: notifyUiEnabled,
+                  notifyPushoverEnabled: notifyPushoverEnabled,
+                  notifyWhatsappEnabled: notifyWhatsappEnabled,
+                }),
+              );
+            openAiDirty = false;
+            pushEvent("config", "saving");
+          });
+
+          textarea.addEventListener("keydown", function (event) {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              form.requestSubmit();
+            }
+          });
+
+          form.addEventListener("submit", function (event) {
+            event.preventDefault();
+            if (button.textContent === "Cancel" && pendingRequestId) {
+              if (socket && socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({ type: "cancel", requestId: pendingRequestId }));
+              }
+              pendingReplyPrefill = "";
+              pushEvent("cancel", "requested");
+              setIdle();
+              return;
+            }
+            const message = textarea.value.trim();
+            if (!sendMessage(message)) {
+              return;
+            }
+            textarea.value = "";
+          });
+
+          checkMailShortcut.addEventListener("click", function () {
+            const sent = sendMessage("check mail", { prefillOnReply: "my mails" });
+            if (sent) {
+              pushEvent("shortcut", "Check Mail");
+            }
+          });
+
+          remindMeShortcut.addEventListener("click", function () {
+            textarea.value = "remind me ";
+            textarea.focus();
+            textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+            pushEvent("shortcut", "Remind Me");
+          });
+
+          homeAssistantShortcut.addEventListener("click", function () {
+            textarea.value = "HASS ";
+            textarea.focus();
+            textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+            pushEvent("shortcut", "Home Assistant");
+          });
+
+          showScheduleShortcut.addEventListener("click", function () {
+            const sent = sendMessage("show my crons");
+            if (sent) {
+              pushEvent("shortcut", "Show My Scheduler");
+            }
+          });
+
+          codexLoginShortcut.addEventListener("click", function () {
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+              pushEvent("shortcut", "Codex Login (socket not connected)");
+              return;
+            }
+            oauthCallbackPanel.classList.add("active");
+            clearResult();
+            setWaiting("codex login");
+            promptValue.textContent = "codex login";
+            pushEvent("send", "codex login");
+            socket.send(JSON.stringify({ type: "codex-login" }));
+            pushEvent("shortcut", "Codex Login");
+          });
+
+          oauthCallbackSaveButton.addEventListener("click", function () {
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+              pushEvent("oauth", "socket not connected");
+              return;
+            }
+            const callbackUrl = (oauthCallbackInput.value || "").trim();
+            if (!callbackUrl) {
+              pushEvent("oauth", "paste callback URL first");
+              return;
+            }
+            clearResult();
+            setWaiting("oauth callback save");
+            promptValue.textContent = "save codex oauth callback";
+            pushEvent("send", "save codex oauth callback");
+            socket.send(
+              JSON.stringify({
+                type: "codex-login-save-callback",
+                callbackUrl: callbackUrl,
+              }),
+            );
+          });
+
+          replyPrevButton.addEventListener("click", function () {
+            if (replyHistory.length === 0 || replyHistoryIndex <= 0) {
+              updateReplyHistoryButtons();
+              return;
+            }
+            replyHistoryIndex -= 1;
+            renderCurrentHistoryCursor();
+          });
+
+          replyNextButton.addEventListener("click", function () {
+            if (replyHistory.length === 0 || replyHistoryIndex >= replyHistory.length) {
+              updateReplyHistoryButtons();
+              return;
+            }
+            replyHistoryIndex += 1;
+            renderCurrentHistoryCursor();
+          });
+
+          controlPanelToggle.addEventListener("click", function () {
+            controlPanel.classList.toggle("collapsed");
+            renderControlPanelCollapsed();
+          });
+
+          renderControlPanelCollapsed();
+          renderNotifyToggles();
+          renderExecutionToggles();
+          const storedEventsVisibility = localStorage.getItem(eventsToggleStorageKey);
+          showEventsEnabled = storedEventsVisibility === "true";
+          renderEventsToggle();
+          loadEmailSummaryMemory();
+          loadEmailViewerQueue();
+          resetEmailViewer();
+          setActiveViewerTab("reply");
+          loadReplyHistory();
+          renderCurrentHistoryCursor();
+          renderEmailViewerQueueNav();
+          updateReplyHistoryButtons();
+
+        })();
+      </script>
+    </main>
+  </body>
+</html>

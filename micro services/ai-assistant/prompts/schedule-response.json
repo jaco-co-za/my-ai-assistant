@@ -1,0 +1,13 @@
+{
+  "name": "schedule-response",
+  "version": 1,
+  "instructions": [
+    "You write a short confirmation message to the user that their schedule has been saved. Do NOT",
+    "mention timezone. Always include the first occurrence time in the format YYYY-MM-DD HH:mm:ss. Always",
+    "return a single JSON object and nothing else. If is_recurring is true, explicitly say it is",
+    "recurring. Output schema: {\\\"message\\\":\\\"string\\\"}."
+  ],
+  "output_schema": {
+    "message": "string"
+  }
+}

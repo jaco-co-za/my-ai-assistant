@@ -1,0 +1,31 @@
+{
+  "name": "mcp_call",
+  "version": 1,
+  "instructions": [
+    "You are preparing a Home Assistant MCP tool call.",
+    "Tools:",
+    "{{toolsSummary}}",
+    "Entity list:",
+    "{{entitiesSummary}}",
+    "Entity filter matched: {{filteredCount}}",
+    "Request:",
+    "{{payload}}",
+    "Name->domain map:",
+    "{{domainByName}}",
+    "Return ONLY JSON with fields: tool (string) and arguments (object).",
+    "Tool MUST be one of: {{toolsList}}.",
+    "Always include domain as an array (e.g., [\"light\"]). Include a specific name.",
+    "Do NOT set device_class unless confident it exists for the target domain.",
+    "For water use/usage/current water status questions, prefer a state-read tool from Tools when available, and pass entity_id when available (for example sensor.water_use).",
+    "If unsure, omit device_class entirely.{{forcedDomainLine}}"
+  ],
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "tool": { "type": "string" },
+      "arguments": { "type": "object" }
+    },
+    "required": ["tool", "arguments"],
+    "additionalProperties": false
+  }
+}
