@@ -234,15 +234,74 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@playwright/cli@npm:^0.1.0":
-  version: 0.1.0
-  resolution: "@playwright/cli@npm:0.1.0"
+"@openai/codex-darwin-arm64@npm:@openai/codex@0.101.0-darwin-arm64":
+  version: 0.101.0-darwin-arm64
+  resolution: "@openai/codex@npm:0.101.0-darwin-arm64"
+  conditions: os=darwin & cpu=arm64
+  languageName: node
+  linkType: hard
+
+"@openai/codex-darwin-x64@npm:@openai/codex@0.101.0-darwin-x64":
+  version: 0.101.0-darwin-x64
+  resolution: "@openai/codex@npm:0.101.0-darwin-x64"
+  conditions: os=darwin & cpu=x64
+  languageName: node
+  linkType: hard
+
+"@openai/codex-linux-arm64@npm:@openai/codex@0.101.0-linux-arm64":
+  version: 0.101.0-linux-arm64
+  resolution: "@openai/codex@npm:0.101.0-linux-arm64"
+  conditions: os=linux & cpu=arm64
+  languageName: node
+  linkType: hard
+
+"@openai/codex-linux-x64@npm:@openai/codex@0.101.0-linux-x64":
+  version: 0.101.0-linux-x64
+  resolution: "@openai/codex@npm:0.101.0-linux-x64"
+  conditions: os=linux & cpu=x64
+  languageName: node
+  linkType: hard
+
+"@openai/codex-win32-arm64@npm:@openai/codex@0.101.0-win32-arm64":
+  version: 0.101.0-win32-arm64
+  resolution: "@openai/codex@npm:0.101.0-win32-arm64"
+  conditions: os=win32 & cpu=arm64
+  languageName: node
+  linkType: hard
+
+"@openai/codex-win32-x64@npm:@openai/codex@0.101.0-win32-x64":
+  version: 0.101.0-win32-x64
+  resolution: "@openai/codex@npm:0.101.0-win32-x64"
+  conditions: os=win32 & cpu=x64
+  languageName: node
+  linkType: hard
+
+"@openai/codex@npm:^0.101.0":
+  version: 0.101.0
+  resolution: "@openai/codex@npm:0.101.0"
   dependencies:
-    minimist: "npm:^1.2.5"
-    playwright: "npm:1.59.0-alpha-1770426101000"
+    "@openai/codex-darwin-arm64": "npm:@openai/codex@0.101.0-darwin-arm64"
+    "@openai/codex-darwin-x64": "npm:@openai/codex@0.101.0-darwin-x64"
+    "@openai/codex-linux-arm64": "npm:@openai/codex@0.101.0-linux-arm64"
+    "@openai/codex-linux-x64": "npm:@openai/codex@0.101.0-linux-x64"
+    "@openai/codex-win32-arm64": "npm:@openai/codex@0.101.0-win32-arm64"
+    "@openai/codex-win32-x64": "npm:@openai/codex@0.101.0-win32-x64"
+  dependenciesMeta:
+    "@openai/codex-darwin-arm64":
+      optional: true
+    "@openai/codex-darwin-x64":
+      optional: true
+    "@openai/codex-linux-arm64":
+      optional: true
+    "@openai/codex-linux-x64":
+      optional: true
+    "@openai/codex-win32-arm64":
+      optional: true
+    "@openai/codex-win32-x64":
+      optional: true
   bin:
-    playwright-cli: playwright-cli.js
-  checksum: 10c0/7f6cbb9fafc91c00455de7c92524f8ec6239e0705f02ef959497df12d503bf959afe13e65302063a85c3e428c73ee73e89554ef3c8b65f199577980c40948c11
+    codex: bin/codex.js
+  checksum: 10c0/ae50d05fd6f4a9692e054fa2a9cf1dfc093a58dc8fb52f30f74299ce68f1d82dd2d4e4bc83c7275695845b82e56dd4983ca2803d2c85eef53bb488375247fa65
   languageName: node
   linkType: hard
 
@@ -441,7 +500,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "ai-assistant@workspace:."
   dependencies:
-    "@playwright/cli": "npm:^0.1.0"
+    "@openai/codex": "npm:^0.101.0"
     "@popperjs/core": "npm:2.11.8"
     "@types/better-sqlite3": "npm:^7.6.13"
     "@types/bootstrap": "npm:^5"
@@ -1105,31 +1164,12 @@ __metadata:
   languageName: node
   linkType: hard
 
-"fsevents@npm:2.3.2":
-  version: 2.3.2
-  resolution: "fsevents@npm:2.3.2"
-  dependencies:
-    node-gyp: "npm:latest"
-  checksum: 10c0/be78a3efa3e181cda3cf7a4637cb527bcebb0bd0ea0440105a3bb45b86f9245b307dc10a2507e8f4498a7d4ec349d1910f4d73e4d4495b16103106e07eee735b
-  conditions: os=darwin
-  languageName: node
-  linkType: hard
-
 "fsevents@npm:~2.3.2, fsevents@npm:~2.3.3":
   version: 2.3.3
   resolution: "fsevents@npm:2.3.3"
   dependencies:
     node-gyp: "npm:latest"
   checksum: 10c0/a1f0c44595123ed717febbc478aa952e47adfc28e2092be66b8ab1635147254ca6cfe1df792a8997f22716d4cbafc73309899ff7bfac2ac3ad8cf2e4ecc3ec60
-  conditions: os=darwin
-  languageName: node
-  linkType: hard
-
-"fsevents@patch:fsevents@npm%3A2.3.2#optional!builtin<compat/fsevents>":
-  version: 2.3.2
-  resolution: "fsevents@patch:fsevents@npm%3A2.3.2#optional!builtin<compat/fsevents>::version=2.3.2&hash=df0bf1"
-  dependencies:
-    node-gyp: "npm:latest"
   conditions: os=darwin
   languageName: node
   linkType: hard
@@ -1518,7 +1558,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"minimist@npm:^1.2.0, minimist@npm:^1.2.3, minimist@npm:^1.2.5":
+"minimist@npm:^1.2.0, minimist@npm:^1.2.3":
   version: 1.2.8
   resolution: "minimist@npm:1.2.8"
   checksum: 10c0/19d3fcdca050087b84c2029841a093691a91259a47def2f18222f41e7645a0b7c44ef4b40e88a1e58a40c84d2ef0ee6047c55594d298146d0eb3f6b737c20ce6
@@ -1786,30 +1826,6 @@ __metadata:
   version: 4.0.3
   resolution: "picomatch@npm:4.0.3"
   checksum: 10c0/9582c951e95eebee5434f59e426cddd228a7b97a0161a375aed4be244bd3fe8e3a31b846808ea14ef2c8a2527a6eeab7b3946a67d5979e81694654f939473ae2
-  languageName: node
-  linkType: hard
-
-"playwright-core@npm:1.59.0-alpha-1770426101000":
-  version: 1.59.0-alpha-1770426101000
-  resolution: "playwright-core@npm:1.59.0-alpha-1770426101000"
-  bin:
-    playwright-core: cli.js
-  checksum: 10c0/cbf57be8ca0076a298fcccb5cad6213c23c9786cf3f3678a0dfab614541d1bdd32ac89b1ca998b851322ef2c4f7de55002838483ddbc330e2dc1be1c02248578
-  languageName: node
-  linkType: hard
-
-"playwright@npm:1.59.0-alpha-1770426101000":
-  version: 1.59.0-alpha-1770426101000
-  resolution: "playwright@npm:1.59.0-alpha-1770426101000"
-  dependencies:
-    fsevents: "npm:2.3.2"
-    playwright-core: "npm:1.59.0-alpha-1770426101000"
-  dependenciesMeta:
-    fsevents:
-      optional: true
-  bin:
-    playwright: cli.js
-  checksum: 10c0/0e7e1b7b8e26c3893d19e6421c567e6459b5cd5f801576e3a3f79ffdfc312973b6ee36bb7d45d3309e5632d402cd921368a3f42a053aac8f2532de45e2ef1c3b
   languageName: node
   linkType: hard
 

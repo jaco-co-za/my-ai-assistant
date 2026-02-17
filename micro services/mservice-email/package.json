@@ -5,8 +5,9 @@
   "main": "src/index.ts",
   "scripts": {
     "start": "tsx src/index.ts",
-    "dev": "tsx watch src/index.ts",
-    "nodemon": "nodemon --watch src --watch prompts --ext ts,json --exec \"tsx src/index.ts\"",
+    "dev": "nodemon --watch src --watch prompts --watch restart.version --ext ts,json,version --exec \"tsx src/index.ts\"",
+    "nodemon": "nodemon --watch src --watch prompts --watch restart.version --ext ts,json,version --exec \"tsx src/index.ts\"",
+    "restart:service": "node scripts/bump-restart-version.mjs",
     "init:sqlite": "tsx scripts/init-sqlite.ts",
     "build": "tsc -p tsconfig.json"
   },

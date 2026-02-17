@@ -1,17 +1,17 @@
 import type { Server as HttpServer } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
-import { promises as fs } from "node:fs";
+import { promises as fs, readFileSync } from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import dotenv from "dotenv";
-import { getDatabase } from "./database.js";
 import { classifyAndCompile, storeIncomingMessage, storeOutgoingMessage } from "./messageBroker.js";
-import { getCodexProcessEnv } from "./codexEnvironment.js";
+import { getCodexLaunchSpec, resolveProjectCodexHome } from "./codexEnvironment.js";
 
 type ClientMessage = {
   type: "message";
   message: string;
   requestId?: string;
+  skipCache?: boolean;
 };
 
 type ServerMessage = {
@@ -20,6 +20,7 @@ type ServerMessage = {
   code: number;
   msg: string;
   notify?: boolean;
+  payload?: Record<string, unknown>;
   actions?: {
     type: string;
     label: string;
@@ -87,91 +88,193 @@ type ReloadMessage = {
 };
 
 const URL_PATTERN = /https?:\/\/[^\s"'<>]+/i;
-const db = getDatabase();
+const CODEX_LOGIN_URL_WAIT_MS = 15_000;
+const CODEX_LOGIN_FINISH_WAIT_MS = 30_000;
 
 function extractFirstUrl(text: string): string | null {
   const match = text.match(URL_PATTERN);
   return match ? match[0] : null;
 }
 
-async function startCodexLogin(timeoutMs = 8000): Promise<{ message: string }> {
-  const codexEnv = await getCodexProcessEnv();
-  return new Promise((resolve) => {
-    let settled = false;
-    let output = "";
-    let timer: NodeJS.Timeout | null = null;
+function tail(text: string, max = 1200): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= max) {
+    return trimmed;
+  }
+  return trimmed.slice(-max);
+}
 
-    const finish = (message: string): void => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      if (timer) {
-        clearTimeout(timer);
-        timer = null;
-      }
-      resolve({ message });
-    };
+type CodexLoginSession = {
+  child: ChildProcessWithoutNullStreams;
+  completion: Promise<{ ok: boolean; message: string }>;
+  waitForAuthUrl: (timeoutMs?: number) => Promise<string>;
+};
 
-    let child;
+const codexLoginSessions = new WeakMap<WebSocket, CodexLoginSession>();
+
+function cleanupCodexLoginSession(socket: WebSocket): void {
+  const session = codexLoginSessions.get(socket);
+  if (!session) {
+    return;
+  }
+  if (!session.child.killed && session.child.exitCode === null) {
     try {
-      child = spawn("codex", ["login"], {
-        shell: true,
-        windowsHide: true,
-        env: codexEnv,
-      });
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : "unknown error";
-      finish(`Unable to start Codex login: ${msg}`);
-      return;
+      session.child.kill();
+    } catch {
+      // ignore
     }
+  }
+  codexLoginSessions.delete(socket);
+}
 
-    const collect = (chunk: Buffer | string): void => {
-      const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
-      output += text;
-      const url = extractFirstUrl(output);
-      if (!url) {
-        return;
+async function startCodexLoginSession(socket: WebSocket): Promise<CodexLoginSession> {
+  cleanupCodexLoginSession(socket);
+  const codexLaunch = await getCodexLaunchSpec();
+  const child = spawn(codexLaunch.command, [...codexLaunch.prefixArgs, "login"], {
+    shell: false,
+    windowsHide: true,
+    env: codexLaunch.env,
+  });
+
+  let output = "";
+  let authUrl: string | null = null;
+  let urlResolver: ((value: string) => void) | null = null;
+  let urlRejecter: ((reason: Error) => void) | null = null;
+
+  const waitForAuthUrl = (timeoutMs = CODEX_LOGIN_URL_WAIT_MS): Promise<string> => {
+    if (authUrl) {
+      return Promise.resolve(authUrl);
+    }
+    return new Promise((resolve, reject) => {
+      urlResolver = resolve;
+      urlRejecter = reject;
+      const timer = setTimeout(() => {
+        if (urlRejecter === reject) {
+          urlResolver = null;
+          urlRejecter = null;
+        }
+        reject(new Error("Codex login did not emit an auth URL in time."));
+      }, timeoutMs);
+      const wrappedResolve = (value: string): void => {
+        clearTimeout(timer);
+        if (urlResolver === wrappedResolve) {
+          urlResolver = null;
+          urlRejecter = null;
+        }
+        resolve(value);
+      };
+      const wrappedReject = (reason: Error): void => {
+        clearTimeout(timer);
+        if (urlRejecter === wrappedReject) {
+          urlResolver = null;
+          urlRejecter = null;
+        }
+        reject(reason);
+      };
+      urlResolver = wrappedResolve;
+      urlRejecter = wrappedReject;
+    });
+  };
+
+  const collect = (chunk: Buffer | string): void => {
+    const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+    output += text;
+    if (!authUrl) {
+      const extracted = extractFirstUrl(output);
+      if (extracted) {
+        authUrl = extracted;
+        if (urlResolver) {
+          const resolve = urlResolver;
+          urlResolver = null;
+          urlRejecter = null;
+          resolve(extracted);
+        }
       }
-      child.kill();
-      finish(`Open this URL to continue Codex login:\n${url}`);
-    };
+    }
+  };
 
-    child.stdout.on("data", collect);
-    child.stderr.on("data", collect);
+  child.stdout.on("data", collect);
+  child.stderr.on("data", collect);
+
+  const completion = new Promise<{ ok: boolean; message: string }>((resolve) => {
     child.on("error", (error: Error) => {
       const msg = error instanceof Error ? error.message : "unknown error";
-      finish(`Unable to start Codex login: ${msg}`);
+      if (urlRejecter) {
+        const reject = urlRejecter;
+        urlResolver = null;
+        urlRejecter = null;
+        reject(new Error(`Unable to start Codex login: ${msg}`));
+      }
+      resolve({ ok: false, message: `Codex login failed: ${msg}` });
     });
-    child.on("exit", () => {
-      if (settled) {
+    child.on("exit", (code) => {
+      const logs = tail(output);
+      if (!authUrl && urlRejecter) {
+        const reject = urlRejecter;
+        urlResolver = null;
+        urlRejecter = null;
+        reject(new Error("Codex login exited before emitting an auth URL."));
+      }
+      if (code === 0) {
+        resolve({ ok: true, message: logs || "Codex login complete." });
         return;
       }
-      const url = extractFirstUrl(output);
-      if (url) {
-        finish(`Open this URL to continue Codex login:\n${url}`);
-        return;
-      }
-      finish("Codex login did not emit a URL here. Run `codex login` in an interactive terminal.");
+      resolve({ ok: false, message: logs || `Codex login exited with code ${code}` });
     });
-
-    timer = setTimeout(() => {
-      if (settled) {
-        return;
-      }
-      const url = extractFirstUrl(output);
-      child.kill();
-      if (url) {
-        finish(`Open this URL to continue Codex login:\n${url}`);
-        return;
-      }
-      finish("Codex login is TTY-only in this environment. Run `codex login` in your terminal.");
-    }, timeoutMs);
   });
+
+  const session: CodexLoginSession = {
+    child,
+    completion,
+    waitForAuthUrl,
+  };
+  codexLoginSessions.set(socket, session);
+  return session;
+}
+
+async function completeCodexLoginWithCallback(socket: WebSocket, callbackUrl: string): Promise<{ ok: boolean; message: string }> {
+  const session = codexLoginSessions.get(socket);
+  if (!session) {
+    return { ok: false, message: "No active Codex login session. Click Codex Login first." };
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL((callbackUrl || "").trim());
+  } catch {
+    return { ok: false, message: "Invalid callback URL." };
+  }
+
+  try {
+    await fetch(parsed.toString(), {
+      method: "GET",
+      redirect: "manual",
+    });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : "unknown error";
+    return { ok: false, message: `Failed to send callback to local login server: ${msg}` };
+  }
+
+  const result = await Promise.race([
+    session.completion,
+    new Promise<{ ok: boolean; message: string }>((resolve) => {
+      setTimeout(() => resolve({ ok: false, message: "Codex login did not finish after callback." }), CODEX_LOGIN_FINISH_WAIT_MS);
+    }),
+  ]);
+
+  codexLoginSessions.delete(socket);
+  if (!session.child.killed && session.child.exitCode === null) {
+    try {
+      session.child.kill();
+    } catch {
+      // ignore
+    }
+  }
+  return result;
 }
 
 async function runCodexSmokeTest(timeoutMs = 45_000): Promise<{ ok: boolean; message: string }> {
-  const codexEnv = await getCodexProcessEnv();
+  const codexLaunch = await getCodexLaunchSpec();
   const outputPath = path.resolve(process.cwd(), "data", `codex-smoke-${Date.now()}.txt`);
   try {
     await fs.mkdir(path.dirname(outputPath), { recursive: true });
@@ -204,18 +307,18 @@ async function runCodexSmokeTest(timeoutMs = 45_000): Promise<{ ok: boolean; mes
     let child;
     try {
       child = spawn(
-        "codex",
+        codexLaunch.command,
         [
+          ...codexLaunch.prefixArgs,
           "exec",
           "--skip-git-repo-check",
           "--output-last-message",
           outputPath,
-          "-",
         ],
         {
-          shell: true,
+          shell: false,
           windowsHide: true,
-          env: codexEnv,
+          env: codexLaunch.env,
         },
       );
       child.stdin.write("Reply with exactly: Codex auth OK\n");
@@ -272,48 +375,27 @@ async function runCodexSmokeTest(timeoutMs = 45_000): Promise<{ ok: boolean; mes
   });
 }
 
-function saveAppSetting(key: string, value: string): void {
-  db.prepare(
-    `INSERT INTO app_settings (key, value, updated_at)
-     VALUES (?, ?, ?)
-     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-  ).run(key, value, new Date().toISOString());
-}
-
-function getAppSetting(key: string): string {
-  const row = db.prepare("SELECT value FROM app_settings WHERE key = ? LIMIT 1").get(key) as { value?: string } | undefined;
-  return typeof row?.value === "string" ? row.value : "";
-}
-
 function hasCodexAuthToken(): boolean {
-  return getAppSetting("openaioauthtoken").trim().length > 0;
-}
-
-function extractIdTokenFromCallbackUrl(rawCallbackUrl: string): string | null {
-  const input = (rawCallbackUrl || "").trim();
-  if (!input) {
-    return null;
-  }
-  let parsed: URL;
+  const codexHome = resolveProjectCodexHome();
+  const authPath = path.resolve(codexHome, "auth.json");
   try {
-    parsed = new URL(input);
+    const raw = readFileSync(authPath, "utf8");
+    const parsed = JSON.parse(raw) as {
+      OPENAI_API_KEY?: unknown;
+      tokens?: {
+        access_token?: unknown;
+        refresh_token?: unknown;
+      };
+    };
+
+    const apiKeyDirect = typeof parsed.OPENAI_API_KEY === "string" ? parsed.OPENAI_API_KEY.trim() : "";
+    const tokens = parsed.tokens ?? {};
+    const accessToken = typeof tokens.access_token === "string" ? tokens.access_token.trim() : "";
+    const refreshToken = typeof tokens.refresh_token === "string" ? tokens.refresh_token.trim() : "";
+    return apiKeyDirect.length > 0 || accessToken.length > 0 || refreshToken.length > 0;
   } catch {
-    return null;
+    return false;
   }
-  const fromQuery = parsed.searchParams.get("id_token");
-  if (fromQuery && fromQuery.trim()) {
-    return fromQuery.trim();
-  }
-  const hash = parsed.hash.startsWith("#") ? parsed.hash.slice(1) : parsed.hash;
-  if (!hash) {
-    return null;
-  }
-  const hashParams = new URLSearchParams(hash);
-  const fromHash = hashParams.get("id_token");
-  if (fromHash && fromHash.trim()) {
-    return fromHash.trim();
-  }
-  return null;
 }
 
 const clients = new Set<WebSocket>();
@@ -505,35 +587,49 @@ export function registerWebsocket(server: HttpServer): void {
           cancelled.add(parsed.requestId);
         }
         if (parsed && parsed.type === "codex-login") {
-          const result = await startCodexLogin();
-          const reply: ServerMessage = {
-            type: "reply",
-            success: true,
-            code: 200,
-            msg: result.message,
-          };
-          socket.send(JSON.stringify(reply));
+          try {
+            const session = await startCodexLoginSession(socket);
+            const authUrl = await session.waitForAuthUrl();
+            const reply: ServerMessage = {
+              type: "reply",
+              success: true,
+              code: 200,
+              msg:
+                `Open this URL to continue Codex login:\n${authUrl}\n\n` +
+                "After login, paste the full callback URL and click Save Callback Token.",
+            };
+            socket.send(JSON.stringify(reply));
+          } catch (error) {
+            const msg = error instanceof Error ? error.message : "unknown error";
+            const reply: ServerMessage = {
+              type: "reply",
+              success: false,
+              code: 500,
+              msg: `Unable to start Codex login: ${msg}`,
+            };
+            socket.send(JSON.stringify(reply));
+          }
         }
         if (parsed && parsed.type === "codex-login-save-callback") {
-          const token = extractIdTokenFromCallbackUrl(parsed.callbackUrl);
-          if (!token) {
+          const loginResult = await completeCodexLoginWithCallback(socket, parsed.callbackUrl);
+          if (!loginResult.ok) {
             const reply: ServerMessage = {
               type: "reply",
               success: false,
               code: 400,
-              msg: "Could not find id_token in callback URL.",
+              msg: loginResult.message,
             };
             socket.send(JSON.stringify(reply));
+            socket.send(JSON.stringify(currentConfig()));
             return;
           }
-          saveAppSetting("openaioauthtoken", token);
-          saveAppSetting("openaioauthcallbackurl", parsed.callbackUrl.trim());
+
           const smoke = await runCodexSmokeTest();
           const reply: ServerMessage = {
             type: "reply",
             success: smoke.ok,
             code: smoke.ok ? 200 : 500,
-            msg: `OAuth callback saved. id_token stored in database as openaioauthtoken.\nCodex test response: ${smoke.message}`,
+            msg: `Codex login completed via callback URL.\nCodex test response: ${smoke.message}`,
           };
           socket.send(JSON.stringify(reply));
           socket.send(JSON.stringify(currentConfig()));
@@ -552,7 +648,8 @@ export function registerWebsocket(server: HttpServer): void {
         pending.set(requestId, controller);
       }
       const stored = storeIncomingMessage({ from: "queue-ui", message });
-      const result = await classifyAndCompile("queue-ui", message, stored.id);
+      const skipCache = Boolean((parsed as ClientMessage).skipCache);
+      const result = await classifyAndCompile("queue-ui", message, stored.id, { skipCache });
       storeOutgoingMessage({ inmessageId: stored.id, message: result.msg });
       if (requestId) {
         pending.delete(requestId);
@@ -567,6 +664,7 @@ export function registerWebsocket(server: HttpServer): void {
         code: result.code,
         msg: result.msg,
         notify: result.notify,
+        payload: result.payload,
         actions: result.uiActions,
         attachments: result.attachments,
       };
@@ -574,6 +672,7 @@ export function registerWebsocket(server: HttpServer): void {
     });
 
     socket.on("close", () => {
+      cleanupCodexLoginSession(socket);
       clients.delete(socket);
     });
 

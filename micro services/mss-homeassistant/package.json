@@ -4,8 +4,9 @@
   "private": true,
   "main": "dist/index.js",
   "scripts": {
-    "nodemon": "nodemon --watch src --ext ts --exec \"ts-node src/index.ts\"",
-    "dev": "nodemon --watch src --ext ts --exec \"ts-node src/index.ts\"",
+    "nodemon": "nodemon --watch src --watch restart.version --ext ts,version --exec \"ts-node src/index.ts\"",
+    "dev": "nodemon --watch src --watch restart.version --ext ts,version --exec \"ts-node src/index.ts\"",
+    "restart:service": "node scripts/bump-restart-version.mjs",
     "build": "tsc",
     "start": "node dist/index.js",
     "docker:build": "yarn build && docker build -t micro-service-home-assistant:latest .",

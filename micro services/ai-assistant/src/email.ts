@@ -7,7 +7,7 @@ const DEFAULT_EMAIL_URL = "http://192.168.55.73:3222/llm-query";
 const DEFAULT_WHATSAPP_MESSAGE_URL = "http://localhost:8085/message";
 const EMAIL_TIMEOUT_MS = Number(process.env.EMAIL_TIMEOUT_MS ?? "") > 0
   ? Number(process.env.EMAIL_TIMEOUT_MS)
-  : 15_000;
+  : 180_000;
 const CONFIRM_TTL_MS = Number(process.env.CONFIRM_TTL_SEC ?? "") > 0
   ? Number(process.env.CONFIRM_TTL_SEC) * 1000
   : 120_000;
@@ -92,6 +92,22 @@ type ParsedEmailResponse = {
   follow_up_question?: unknown;
   followup_question?: unknown;
   "follow-up-question"?: unknown;
+  email?: unknown;
+  email_viewer_rows?: unknown;
+};
+
+type ParsedEmailViewerRow = {
+  id: number;
+  from_raw: string;
+  to_raw: string;
+  subject: string;
+  received_at: string;
+  folder: string;
+  subfolder: string;
+  body_text: string;
+  body_html: string;
+  attachments: string;
+  attachment_ids: string;
 };
 
 type ParsedUiAction = {
@@ -102,6 +118,35 @@ type ParsedUiAction = {
 
 function inferBuiltInEmailIntent(message: string): { intent: string; verb: string } | null {
   const lowered = message.toLowerCase();
+  const hasMailWord = /\b(mail|email|mails|emails|inbox|message|messages)\b/.test(lowered);
+  const hasPossessiveMailList =
+    /\bmy\b/.test(lowered) &&
+    /\b(mail|mails|email|emails|inbox)\b/.test(lowered);
+  const hasShowVerb = /\b(show|list|display|check|view|read)\b/.test(lowered);
+  const hasRecencyOrCount = /\b(last|latest|recent|newest|oldest|first|\d+)\b/.test(lowered);
+  const hasPossessiveListPattern =
+    /\bmy\b/.test(lowered) &&
+    /\b(last|latest|recent|newest|oldest|first)\b/.test(lowered);
+
+  if (hasMailWord && hasShowVerb && hasRecencyOrCount) {
+    return { intent: "show", verb: "show" };
+  }
+  if (hasMailWord && hasShowVerb) {
+    return { intent: "show", verb: "show" };
+  }
+  if (hasMailWord && hasPossessiveMailList) {
+    return { intent: "show", verb: "show" };
+  }
+  if (hasMailWord && (hasRecencyOrCount || hasPossessiveListPattern)) {
+    return { intent: "show", verb: "show" };
+  }
+
+  const hasCountVerb = /\b(count|how many|number of)\b/.test(lowered);
+  const hasSentWord = /\b(sent|sent mail|sent email|outbox)\b/.test(lowered);
+  if (hasMailWord && hasCountVerb && hasSentWord) {
+    return { intent: "count-sent", verb: "count" };
+  }
+
   const hasMarkAllReadPattern =
     /\bmark\b/.test(lowered) &&
     /\ball\b/.test(lowered) &&
@@ -119,6 +164,13 @@ function inferBuiltInEmailIntent(message: string): { intent: string; verb: strin
     return { intent: "download-attachment", verb: "download" };
   }
   return null;
+}
+
+function shouldForceSkipCacheForSenderQuery(message: string): boolean {
+  const lowered = String(message || "").toLowerCase();
+  const hasSenderScope = /\bfrom\s+[a-z0-9._%+\-@]{2,}\b/.test(lowered);
+  const hasMailShape = /\b(mail|email|message|inbox|sent)\b/.test(lowered);
+  return hasSenderScope && hasMailShape;
 }
 
 function isReadEmailRequest(message: string, intent: { intent?: string; verb?: string } | null | undefined): boolean {
@@ -160,6 +212,113 @@ function buildWhatsappReadSummary(parsed: ParsedEmailResponse, fallbackMessage: 
     return emailId ? `Email ${emailId} summary is unavailable.` : "Email summary is unavailable.";
   }
   return emailId ? `Email ${emailId} summary:\n${summary}` : summary;
+}
+
+function parseAddressText(value: unknown): string {
+  if (typeof value === "string") {
+    return value.trim();
+  }
+  return "";
+}
+
+function looksLikeHtml(value: string): boolean {
+  return /<\/?[a-z][\s\S]*>/i.test(value);
+}
+
+function splitCachedBody(value: string): { bodyHtml: string; bodyText: string } {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return { bodyHtml: "", bodyText: "" };
+  }
+  if (looksLikeHtml(raw)) {
+    return { bodyHtml: raw, bodyText: "" };
+  }
+  return { bodyHtml: "", bodyText: raw };
+}
+
+function parseEmailViewerPayload(
+  parsed: ParsedEmailResponse,
+  summaryFallback: string,
+  userMessage: string,
+): Record<string, unknown> | undefined {
+  const parsedEmail = parsed.email && typeof parsed.email === "object" && !Array.isArray(parsed.email)
+    ? parsed.email as Record<string, unknown>
+    : {};
+  const emailId =
+    (typeof parsed.email_id === "number" ? String(parsed.email_id) : "") ||
+    (typeof parsed.email_id === "string" ? parsed.email_id.trim() : "") ||
+    (typeof parsed.emailId === "number" ? String(parsed.emailId) : "") ||
+    (typeof parsed.emailId === "string" ? parsed.emailId.trim() : "") ||
+    (typeof parsed.id === "number" ? String(parsed.id) : "") ||
+    (typeof parsed.id === "string" ? parsed.id.trim() : "") ||
+    (typeof parsedEmail.id === "number" ? String(parsedEmail.id) : "") ||
+    (typeof parsedEmail.id === "string" ? parsedEmail.id.trim() : "") ||
+    extractEmailIdFromMessage(userMessage);
+  if (!emailId) {
+    return undefined;
+  }
+  const fromValue = parseAddressText(parsedEmail.from_raw) || parseAddressText((parsed as unknown as Record<string, unknown>).from);
+  const toValue = parseAddressText(parsedEmail.to_raw) || parseAddressText((parsed as unknown as Record<string, unknown>).to);
+  const subjectValue = parseAddressText(parsedEmail.subject) || parseAddressText((parsed as unknown as Record<string, unknown>).subject);
+  const receivedValue = parseAddressText(parsedEmail.received_at) || parseAddressText((parsed as unknown as Record<string, unknown>).received_at);
+  const summaryValue =
+    (typeof parsed.ai_summary === "string" ? parsed.ai_summary.trim() : "") ||
+    (typeof parsed.summary === "string" ? parsed.summary.trim() : "") ||
+    summaryFallback.trim();
+  const bodyFromParsedEmail = typeof parsedEmail.body === "string" ? parsedEmail.body : "";
+  const cachedBody = splitCachedBody(bodyFromParsedEmail);
+  const resolvedBodyHtml = cachedBody.bodyHtml;
+  const resolvedBodyText = cachedBody.bodyText;
+
+  return {
+    email_id: emailId,
+    id: emailId,
+    from: fromValue,
+    to: toValue,
+    subject: subjectValue,
+    received_at: receivedValue,
+    folder: "",
+    subfolder: "",
+    body_text: resolvedBodyText,
+    body_html: resolvedBodyHtml,
+    viewer_mode: resolvedBodyHtml ? "cache-html" : "cache-text",
+    ai_summary: summaryValue,
+    summary: summaryValue,
+  };
+}
+
+function parseEmailViewerRowsPayload(parsed: ParsedEmailResponse): ParsedEmailViewerRow[] | undefined {
+  const raw = parsed.email_viewer_rows;
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return undefined;
+  }
+  const normalized = raw
+    .map((entry) => {
+      const row = entry && typeof entry === "object" ? entry as Record<string, unknown> : null;
+      if (!row) {
+        return null;
+      }
+      const idRaw = typeof row.id === "number" ? row.id : Number(row.id);
+      const id = Number.isFinite(idRaw) && idRaw > 0 ? Math.floor(idRaw) : 0;
+      if (!id) {
+        return null;
+      }
+      return {
+        id,
+        from_raw: typeof row.from_raw === "string" ? row.from_raw : "",
+        to_raw: typeof row.to_raw === "string" ? row.to_raw : "",
+        subject: typeof row.subject === "string" ? row.subject : "",
+        received_at: typeof row.received_at === "string" ? row.received_at : "",
+        folder: typeof row.folder === "string" ? row.folder : "",
+        subfolder: typeof row.subfolder === "string" ? row.subfolder : "",
+        body_text: typeof row.body_text === "string" ? row.body_text : "",
+        body_html: typeof row.body_html === "string" ? row.body_html : "",
+        attachments: typeof row.attachments === "string" ? row.attachments : "",
+        attachment_ids: typeof row.attachment_ids === "string" ? row.attachment_ids : "",
+      };
+    })
+    .filter((entry): entry is ParsedEmailViewerRow => entry !== null);
+  return normalized.length > 0 ? normalized : undefined;
 }
 
 function normalizeAttachments(value: unknown): BrokerResult["attachments"] {
@@ -273,21 +432,19 @@ function getRecentConversationContext(sessionKey: string, currentMessageId: stri
   }
   const db = getDatabase();
   const rows = db.prepare(
-    `SELECT i.message AS user_message, o.message AS assistant_message
+    `SELECT i.message AS user_message
      FROM inmessages i
-     LEFT JOIN outmessages o ON o.inmessage_id = i.id
      WHERE i."from" = ? AND i.id != ?
      ORDER BY i.received_at DESC
      LIMIT ?`,
-  ).all(key, currentMessageId, limit) as Array<{ user_message?: string; assistant_message?: string | null }>;
+  ).all(key, currentMessageId, limit) as Array<{ user_message?: string }>;
   if (!rows || rows.length === 0) {
     return "";
   }
   const chronological = rows.reverse();
-  const lines: string[] = ["Recent conversation context:"];
+  const lines: string[] = ["Recent user messages context:"];
   for (const row of chronological) {
     lines.push(`User: ${(row.user_message || "").trim() || "-"}`);
-    lines.push(`Assistant: ${(row.assistant_message || "").trim() || "-"}`);
   }
   return lines.join("\n");
 }
@@ -372,14 +529,22 @@ function createEmailConfirmation(from: string, url: string, payload: Record<stri
   ).run(id, from, "app-confirm", confirmationPayload, createdAt, expiresAt);
 }
 
-export async function handleEmail(uuid: string, message: string, from: string): Promise<BrokerResult> {
+export async function handleEmail(
+  uuid: string,
+  message: string,
+  from: string,
+  options?: { skipCache?: boolean },
+): Promise<BrokerResult> {
+  const skipCache = Boolean(options?.skipCache);
+  const forceSkipCache = shouldForceSkipCacheForSenderQuery(message);
+  const effectiveSkipCache = skipCache || forceSkipCache;
   const builtInIntent = inferBuiltInEmailIntent(message);
-  let intent = builtInIntent ?? await intentClassifier(message, "email");
+  let intent = builtInIntent ?? await intentClassifier(message, "email", { skipCache: effectiveSkipCache });
   if ((!intent.intent || intent.intent === "unknown") && !builtInIntent) {
     const context = getRecentConversationContext(from, uuid, 5);
     if (context) {
       const retryMessage = buildIntentRetryMessage(message, context);
-      intent = await intentClassifier(retryMessage, "email");
+      intent = await intentClassifier(retryMessage, "email", { skipCache: effectiveSkipCache });
     }
   }
 
@@ -403,6 +568,7 @@ export async function handleEmail(uuid: string, message: string, from: string): 
     result: llmResult,
     source_channel: sourceChannel,
     source_from: from,
+    skip_cache: effectiveSkipCache,
   };
 
   try {
@@ -427,6 +593,21 @@ export async function handleEmail(uuid: string, message: string, from: string): 
       const followUpQuestion = isFollowUpQuestionFlag(parsed);
       const notify = isNotifyFlag(parsed);
       const responseType = typeof parsed?.type === "string" ? parsed.type.trim().toLowerCase() : "";
+      const viewerPayloadSingle =
+        from === "queue-ui"
+          ? parseEmailViewerPayload(parsed, responseMessage, message)
+          : undefined;
+      const viewerRowsPayload =
+        from === "queue-ui"
+          ? parseEmailViewerRowsPayload(parsed)
+          : undefined;
+      const viewerPayload =
+        viewerPayloadSingle || viewerRowsPayload
+          ? {
+              ...(viewerPayloadSingle ?? {}),
+              ...(viewerRowsPayload ? { email_viewer_rows: viewerRowsPayload } : {}),
+            }
+          : undefined;
       if (responseType === "attachment") {
         const attachments = normalizeAttachments(parsed.attachments);
         const rows = normalizeAttachmentRows(parsed.rows);
@@ -434,7 +615,7 @@ export async function handleEmail(uuid: string, message: string, from: string): 
           `[email] attachment response from=${from} parsed=${attachments ? attachments.length : 0} type=${responseType}`,
         );
         if (from === "queue-ui") {
-          return { success: true, code: 200, msg: responseMessage, uuid, attachments, uiActions, notify };
+          return { success: true, code: 200, msg: responseMessage, uuid, attachments, payload: viewerPayload, uiActions, notify };
         }
         if (isWhatsappSender(from)) {
           const attachmentCount = attachments ? attachments.length : 0;
@@ -461,17 +642,17 @@ export async function handleEmail(uuid: string, message: string, from: string): 
             }
           }
         }
-        return { success: true, code: 200, msg: responseMessage, uuid, uiActions, notify };
+        return { success: true, code: 200, msg: responseMessage, uuid, payload: viewerPayload, uiActions, notify };
       }
       if (followUpQuestion) {
-        return { success: true, code: 200, msg: responseMessage, uuid, followUpRoute: "email", uiActions, notify };
+        return { success: true, code: 200, msg: responseMessage, uuid, payload: viewerPayload, followUpRoute: "email", uiActions, notify };
       }
       if (isWhatsappSender(from) && isReadEmailRequest(message, intent) && !isReadFullEmailRequest(message)) {
         const summaryMessage = buildWhatsappReadSummary(parsed, responseMessage, message);
         return { success: true, code: 200, msg: summaryMessage, uuid, uiActions, notify };
       }
       if (confirmMessage) {
-        return { success: true, code: 200, msg: confirmMessage, uuid, uiActions, notify };
+        return { success: true, code: 200, msg: confirmMessage, uuid, payload: viewerPayload, uiActions, notify };
       }
     } catch {
       // ignore parse errors, fall back to raw response

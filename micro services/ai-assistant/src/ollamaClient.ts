@@ -12,7 +12,7 @@ import Database from "better-sqlite3";
 import * as readline from 'node:readline/promises';
 
 import { buildDynamicIntentInstructions } from "./dynamicIntents.js";
-import { getCodexProcessEnv } from "./codexEnvironment.js";
+import { getCodexLaunchSpec } from "./codexEnvironment.js";
 
 const DEFAULT_OLLAMA_URL = 'http://localhost:11434';
 const DEFAULT_OLLAMA_MODEL = 'qwen2.5:14b';
@@ -627,9 +627,33 @@ function buildCodexPrompt(req: ChatCompletionRequest): string {
 }
 
 async function runCodexExecPrompt(prompt: string, model?: string): Promise<string> {
-  const codexEnv = await getCodexProcessEnv();
+  const codexLaunch = await getCodexLaunchSpec();
   const outputPath = path.resolve(process.cwd(), "data", `codex-llm-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`);
   await fs.mkdir(path.dirname(outputPath), { recursive: true });
+
+  const normalizePromptForCodexExec = (value: string): string => {
+    const raw = String(value || "");
+    return raw.replace(/services[\\/]+ai-assistant[\\/]+/gi, "");
+  };
+
+  const extractCodexFinalMessage = (raw: string): string => {
+    const text = String(raw || "").replace(/\r\n/g, "\n").trim();
+    if (!text) {
+      return "";
+    }
+    const matches = Array.from(text.matchAll(/(?:^|\n)codex\n([\s\S]*?)(?:\ntokens used\b|$)/gi));
+    if (matches.length > 0) {
+      const candidate = (matches[matches.length - 1]?.[1] || "").trim();
+      if (candidate) {
+        return candidate;
+      }
+    }
+    return text
+      .replace(/^Debugger attached\.\s*/i, "")
+      .replace(/\n?tokens used[\s\S]*$/i, "")
+      .replace(/\n?Waiting for the debugger to disconnect\.\s*$/i, "")
+      .trim();
+  };
 
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -642,7 +666,6 @@ async function runCodexExecPrompt(prompt: string, model?: string): Promise<strin
     if (model) {
       args.push("--model", model);
     }
-    args.push("-");
     if (isCodexTraceEnabled()) {
       console.log(`[codex] exec args=${JSON.stringify(args)}`);
     }
@@ -681,8 +704,12 @@ async function runCodexExecPrompt(prompt: string, model?: string): Promise<strin
 
     let child;
     try {
-      child = spawn("codex", args, { shell: true, windowsHide: true, env: codexEnv });
-      child.stdin.write(`${prompt}\n`);
+      child = spawn(codexLaunch.command, [...codexLaunch.prefixArgs, ...args], {
+        shell: false,
+        windowsHide: true,
+        env: codexLaunch.env,
+      });
+      child.stdin.write(`${normalizePromptForCodexExec(prompt)}\n`);
       child.stdin.end();
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
@@ -716,6 +743,7 @@ async function runCodexExecPrompt(prompt: string, model?: string): Promise<strin
       if (!finalText) {
         finalText = logs.trim();
       }
+      finalText = extractCodexFinalMessage(finalText || logs);
       if (code !== 0) {
         const tail = finalText || logs.trim() || `exit code ${code}`;
         await finishReject(new Error(`Codex exec failed: ${tail}`));
@@ -749,6 +777,11 @@ async function codexChatCompletion(req: ChatCompletionRequest): Promise<ChatComp
     done: true,
     done_reason: "stop",
   };
+}
+
+function isCodexCliMissing(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error || "");
+  return /spawn\s+codex\s+enoent/i.test(msg) || /codex.*not\s+found/i.test(msg);
 }
 
 async function openaiChatCompletion(req: ChatCompletionRequest): Promise<ChatCompletionResponse> {
@@ -954,15 +987,35 @@ async function get<T>(path: string, retries = OLLAMA_RETRIES): Promise<T> {
 }
 
 export async function rawOllamaRequest<T>(path: string, body: unknown): Promise<T> {
+  const isLikelyOllamaModel = (modelValue: unknown): boolean => {
+    if (typeof modelValue !== "string") {
+      return false;
+    }
+    const model = modelValue.trim().toLowerCase();
+    if (!model) {
+      return false;
+    }
+    // Typical Ollama/local model id formats: "model:tag", "qwen...", "llama...", etc.
+    return model.includes(":") || model.startsWith("qwen") || model.startsWith("llama") || model.startsWith("mistral");
+  };
+
   if (isCodexCliEnabled() && path === '/api/chat' && typeof body === 'object' && body !== null) {
     const record = body as Partial<ChatCompletionRequest>;
-    if (Array.isArray(record.messages)) {
-      return (await codexChatCompletion(record as ChatCompletionRequest)) as unknown as T;
+    if (Array.isArray(record.messages) && !isLikelyOllamaModel(record.model)) {
+      try {
+        return (await codexChatCompletion(record as ChatCompletionRequest)) as unknown as T;
+      } catch (error) {
+        if (isCodexCliMissing(error)) {
+          console.warn("[codex] CLI not found; falling back to Ollama /api/chat");
+          return post<T>(path, body);
+        }
+        throw error;
+      }
     }
   }
   if (isOpenAIEnabled() && path === '/api/chat' && typeof body === 'object' && body !== null) {
     const record = body as Partial<ChatCompletionRequest>;
-    if (Array.isArray(record.messages)) {
+    if (Array.isArray(record.messages) && !isLikelyOllamaModel(record.model)) {
       return (await openaiChatCompletion(record as ChatCompletionRequest)) as unknown as T;
     }
   }
@@ -1744,16 +1797,22 @@ export async function topicClassifier(text: string): Promise<TopicResult> {
   }
 }
 
-export async function intentClassifier(text: string, messageClass: string): Promise<IntentResult> {
+export async function intentClassifier(
+  text: string,
+  messageClass: string,
+  options?: { skipCache?: boolean },
+): Promise<IntentResult> {
   const trimmed = text.trim();
   if (!trimmed) {
     return { intent: 'unknown', contextRequired: false };
   }
 
   try {
-    const cached = getCachedIntent(trimmed, messageClass);
-    if (cached) {
-      return cached;
+    if (!options?.skipCache) {
+      const cached = getCachedIntent(trimmed, messageClass);
+      if (cached) {
+        return cached;
+      }
     }
     const template = withNormalizedInstructions(await loadPromptTemplate('intent'));
     const baseInstructions = renderPromptForClass(template, messageClass);
@@ -1791,7 +1850,9 @@ export async function intentClassifier(text: string, messageClass: string): Prom
       return { intent: 'unknown', contextRequired: false };
     }
 
-    setCachedIntent(trimmed, messageClass, intent, verb || undefined);
+    if (!options?.skipCache) {
+      setCachedIntent(trimmed, messageClass, intent, verb || undefined);
+    }
     return { intent, verb: verb || undefined, contextRequired: false };
   } catch (error) {
     const msg = error instanceof Error ? error.message : 'unknown error';
@@ -1802,7 +1863,15 @@ export async function intentClassifier(text: string, messageClass: string): Prom
 
 export async function chatCompletion(req: ChatCompletionRequest): Promise<ChatCompletionResponse> {
   if (isCodexCliEnabled()) {
-    return codexChatCompletion(req);
+    try {
+      return await codexChatCompletion(req);
+    } catch (error) {
+      if (isCodexCliMissing(error)) {
+        console.warn("[codex] CLI not found; falling back to Ollama /api/chat");
+        return post<ChatCompletionResponse>('/api/chat', resolveModel(req));
+      }
+      throw error;
+    }
   }
   if (isOpenAIEnabled()) {
     return openaiChatCompletion(req);

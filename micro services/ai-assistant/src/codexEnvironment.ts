@@ -85,3 +85,32 @@ export async function getCodexProcessEnv(): Promise<NodeJS.ProcessEnv> {
     CODEX_HOME: codexHome,
   };
 }
+
+export type CodexLaunchSpec = {
+  command: string;
+  prefixArgs: string[];
+  env: NodeJS.ProcessEnv;
+};
+
+export async function getCodexLaunchSpec(): Promise<CodexLaunchSpec> {
+  const env = await getCodexProcessEnv();
+  const cwd = process.cwd();
+  const candidates = [
+    path.resolve(cwd, "node_modules", "@openai", "codex", "bin", "codex.js"),
+    path.resolve(cwd, "node_modules", "@openai", "codex", "bin", "codex"),
+  ];
+
+  for (const candidate of candidates) {
+    if (await pathExists(candidate)) {
+      return {
+        command: process.execPath,
+        prefixArgs: [candidate],
+        env,
+      };
+    }
+  }
+
+  throw new Error(
+    "Workspace Codex CLI not found. Expected @openai/codex in this project (node_modules/@openai/codex).",
+  );
+}

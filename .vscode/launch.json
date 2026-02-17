@@ -1,0 +1,36 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Dev: ai-assistant",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "yarn dev",
+      "cwd": "${workspaceFolder}/micro services/ai-assistant"
+    },
+    {
+      "name": "Dev: mservice-email",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "yarn dev",
+      "cwd": "${workspaceFolder}/micro services/mservice-email"
+    },
+    {
+      "name": "Dev: mss-homeassistant",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "yarn dev",
+      "cwd": "${workspaceFolder}/micro services/mss-homeassistant"
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Launch All Microservices",
+      "configurations": [
+        "Dev: ai-assistant",
+        "Dev: mservice-email",
+        "Dev: mss-homeassistant"
+      ]
+    }
+  ]
+}

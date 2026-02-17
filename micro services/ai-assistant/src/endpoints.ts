@@ -178,10 +178,16 @@ function resolveUiHistoryDays(): string {
   return "1";
 }
 
+function resolveShowSendNoCacheButton(): string {
+  const raw = String(process.env.UI_SHOW_SEND_NO_CACHE_BUTTON ?? "false").trim().toLowerCase();
+  return raw === "true" || raw === "1" || raw === "yes" || raw === "on" ? "true" : "false";
+}
+
 function readUiHtml(): string {
   const uiPath = path.resolve("src", "ui", "index.html");
   return fs
     .readFileSync(uiPath, "utf-8")
     .replaceAll("{{uiWsUrl}}", resolveUiWebsocketUrl())
-    .replaceAll("{{historyDays}}", resolveUiHistoryDays());
+    .replaceAll("{{historyDays}}", resolveUiHistoryDays())
+    .replaceAll("{{showSendNoCacheButton}}", resolveShowSendNoCacheButton());
 }

@@ -197,7 +197,13 @@ function isTemporaryRequest(message: string): boolean {
   return false;
 }
 
-export async function handleHomeAssistant(uuid: string, message: string, fromSystem?: string): Promise<BrokerResult> {
+export async function handleHomeAssistant(
+  uuid: string,
+  message: string,
+  fromSystem?: string,
+  options?: { skipCache?: boolean },
+): Promise<BrokerResult> {
+  const skipCache = Boolean(options?.skipCache);
   const isCron = typeof fromSystem === "string" && fromSystem.startsWith("cron-");
   if (isCron) {
     const payload = {
@@ -259,7 +265,7 @@ export async function handleHomeAssistant(uuid: string, message: string, fromSys
         return { success: false, code: 400, msg: "Unable to read current state", uuid };
       }
 
-      const immediateIntent = await intentClassifier(temporary.action, "homeassistant");
+      const immediateIntent = await intentClassifier(temporary.action, "homeassistant", { skipCache });
   if (!immediateIntent.intent || immediateIntent.intent === "unknown") {
         return {
           success: false,
@@ -308,7 +314,7 @@ export async function handleHomeAssistant(uuid: string, message: string, fromSys
     }
   }
 
-  const intent = await intentClassifier(message, "homeassistant");
+  const intent = await intentClassifier(message, "homeassistant", { skipCache });
 
   if (!intent.intent || intent.intent === "unknown") {
     return {

@@ -817,6 +817,16 @@ async function initDb() {
       FOREIGN KEY(attachment_id) REFERENCES email_attachments(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS email_llm_summaries (
+      email_id INTEGER PRIMARY KEY,
+      summary TEXT NOT NULL,
+      model TEXT,
+      raw_response TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(email_id) REFERENCES email_messages(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS blocked_senders (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       pattern TEXT NOT NULL UNIQUE,

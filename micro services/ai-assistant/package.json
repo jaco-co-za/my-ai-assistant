@@ -5,14 +5,14 @@
   "description": "My Personal AI assistant webhook server",
   "type": "module",
   "scripts": {
-    "ensure:playwright-skills": "node scripts/ensure-playwright-skills.mjs",
     "build": "tsc",
-    "start": "yarn ensure:playwright-skills && node dist/server.js",
-    "dev": "yarn ensure:playwright-skills && tsx watch src/server.ts",
-    "nodemon": "yarn ensure:playwright-skills && nodemon --watch src --watch prompts --ext ts,html,json --exec \"node --import tsx src/server.ts\""
+    "start": "node dist/server.js",
+    "dev": "nodemon --watch src --watch prompts --watch restart.version --ext ts,html,json,version --exec \"node --import tsx src/server.ts\"",
+    "nodemon": "nodemon --watch src --watch prompts --watch restart.version --ext ts,html,json,version --exec \"node --import tsx src/server.ts\"",
+    "restart:service": "node scripts/bump-restart-version.mjs"
   },
   "dependencies": {
-    "@playwright/cli": "^0.1.0",
+    "@openai/codex": "^0.101.0",
     "@popperjs/core": "2.11.8",
     "better-sqlite3": "^12.6.2",
     "bootstrap": "5.3.3",

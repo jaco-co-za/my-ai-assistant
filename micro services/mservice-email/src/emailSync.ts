@@ -38,6 +38,11 @@ export function createEmailSync({
   onMailChange,
 }: EmailSyncOptions) {
   const PDF_DEFAULT_PASSWORD = process.env.PDF_DEFAULT_PASSWORD || '';
+  const SUMMARY_MODEL = process.env.EMAIL_SUMMARY_MODEL || process.env.ASSISTANT_MODEL || 'qwen2.5:14b';
+  const SUMMARY_TIMEOUT_MS = Number.parseInt(
+    process.env.EMAIL_SUMMARY_TIMEOUT_MS || process.env.EMAIL_ASSISTANT_TIMEOUT_MS || '60000',
+    10,
+  );
   const IMAP_OPERATION_TIMEOUT_MS = Number.parseInt(
     process.env.EMAIL_IMAP_OPERATION_TIMEOUT_MS || '30000',
     10,
@@ -142,14 +147,23 @@ export function createEmailSync({
       }
       const trashFolder = await ensureFolderRow(trashPath, trashPath);
       const movedMsg = { ...msg, uid: newUid };
-      await upsertMessage(trashFolder.id, movedMsg);
+      await upsertMessage(trashFolder.id, movedMsg, { allowSummary: false });
       if (debug) {
         // eslint-disable-next-line no-console
         console.log(`[blocked] moved UID ${msg.uid} from ${folder.path} to ${trashPath}`);
       }
     } catch (err: any) {
       if (isConnectionUnavailableError(err)) {
-        throw err;
+        // Connection drops during best-effort blocked-message moves should not fail the full sync cycle.
+        // Keep the message in the source folder and continue.
+        if (debug) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[blocked] connection unavailable while moving UID ${msg.uid} from ${folder.path}; keeping in source folder`,
+          );
+        }
+        await upsertMessage(folder.id, msg);
+        return;
       }
       // eslint-disable-next-line no-console
       console.error('[blocked] failed to move message, storing in source folder', err?.message);
@@ -210,7 +224,14 @@ export function createEmailSync({
         moved += 1;
       } catch (err: any) {
         if (isConnectionUnavailableError(err)) {
-          throw err;
+          failed += 1;
+          if (debug) {
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[blocked] connection unavailable while enforcing move for email ${emailId} UID ${uid} in ${folder.path}; skipping`,
+            );
+          }
+          continue;
         }
         failed += 1;
         if (debug) {
@@ -233,15 +254,189 @@ export function createEmailSync({
     return value.replace(/\r/g, '').replace(/[ \t]+\n/g, '\n').trim();
   }
 
+  function truncateForSummary(value: string, maxChars: number): string {
+    if (!value || maxChars <= 0) {
+      return '';
+    }
+    if (value.length <= maxChars) {
+      return value;
+    }
+    return `${value.slice(0, Math.max(0, maxChars - 3))}...`;
+  }
+
+  function cleanSummaryText(value: unknown): string {
+    if (typeof value !== 'string') {
+      return '';
+    }
+    return value
+      .replace(/^ai\s*summary\s*:\s*/i, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function parseAssistantSummary(raw: string): string | null {
+    try {
+      const outer = JSON.parse(raw) as any;
+      let content = '';
+      if (typeof outer?.msg === 'string') {
+        const msgBody = JSON.parse(outer.msg);
+        if (typeof msgBody?.message?.content === 'string') {
+          content = msgBody.message.content;
+        }
+      } else if (typeof outer?.message?.content === 'string') {
+        content = outer.message.content;
+      } else if (typeof outer?.content === 'string') {
+        content = outer.content;
+      }
+      if (!content) {
+        return null;
+      }
+      const parsed = JSON.parse(content) as { ai_summary?: unknown };
+      const summary = cleanSummaryText(parsed?.ai_summary);
+      return summary || null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function sendSummaryRequestToAssistant(payload: Record<string, unknown>): Promise<string | null> {
+    const rawUrl = (process.env.ASSISTANT_URL || '').trim();
+    if (!rawUrl) {
+      return null;
+    }
+    const token = (process.env.ASSISTANT_AUTH ?? process.env.AUTH ?? '').trim().replace(/^Bearer\s+/i, '');
+    const authorizationHeader = token ? `Bearer ${token}` : '';
+    const url = rawUrl.match(/^https?:\/\//i) ? rawUrl : `http://${rawUrl}`;
+    const controller = new AbortController();
+    const timeoutMs = Number.isFinite(SUMMARY_TIMEOUT_MS) && SUMMARY_TIMEOUT_MS > 0 ? SUMMARY_TIMEOUT_MS : 60000;
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const messagePayload = {
+        Authorization: token,
+        authorization: token,
+        model: SUMMARY_MODEL,
+        messages: [
+          {
+            role: 'system',
+            content: 'You summarize emails. Return ONLY valid JSON: {"ai_summary":"..."}',
+          },
+          {
+            role: 'user',
+            content: [
+              'Create a concise email summary from the payload.',
+              'Do not include labels (no "AI Summary:", no metadata keys).',
+              'If body is empty, use subject and sender only.',
+              `Payload: ${JSON.stringify(payload)}`,
+            ].join('\n'),
+          },
+        ],
+        temperature: 0.2,
+        stream: false,
+        format: 'json',
+      };
+      const requestBody = {
+        from: 'custom-prompt',
+        message: JSON.stringify(messagePayload),
+      };
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          ...(authorizationHeader ? { Authorization: authorizationHeader } : {}),
+        },
+        body: JSON.stringify(requestBody),
+        signal: controller.signal,
+      });
+      const raw = await response.text();
+      if (!response.ok) {
+        if (debug) {
+          // eslint-disable-next-line no-console
+          console.warn(`[summary] assistant returned ${response.status}`);
+        }
+        return null;
+      }
+      return raw;
+    } catch (err: any) {
+      if (debug) {
+        // eslint-disable-next-line no-console
+        console.warn('[summary] assistant request failed', err?.message || 'request failed');
+      }
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function saveEmailSummary(emailId: number, summary: string, rawResponse: string): Promise<void> {
+    await dbRun(
+      `INSERT INTO email_llm_summaries (email_id, summary, model, raw_response, updated_at)
+       VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(email_id) DO UPDATE SET
+         summary = excluded.summary,
+         model = excluded.model,
+         raw_response = excluded.raw_response,
+         updated_at = CURRENT_TIMESTAMP;`,
+      emailId,
+      summary,
+      SUMMARY_MODEL,
+      rawResponse,
+    );
+  }
+
+  async function maybeGenerateSummaryForNewEmail(args: {
+    emailId: number;
+    folderPath: string;
+    fromRaw: string | null;
+    toRaw: string | null;
+    subject: string | null;
+    receivedAt: string | null;
+    textBody: string | null;
+    attachments: any[];
+  }): Promise<void> {
+    const compactPayload = {
+      email_id: args.emailId,
+      from: args.fromRaw || '',
+      to: args.toRaw || '',
+      subject: args.subject || '',
+      received_at: args.receivedAt || '',
+      folder: args.folderPath || '',
+      body_text: truncateForSummary(normalizeWhitespace(args.textBody || ''), 6000),
+      attachments: (args.attachments || []).map((attachment) => ({
+        name: attachment?.filename ? String(attachment.filename) : '',
+        mime_type: attachment?.contentType ? String(attachment.contentType) : '',
+        size_bytes: Number.isFinite(Number(attachment?.size)) ? Number(attachment.size) : 0,
+      })),
+    };
+    const rawResponse = await sendSummaryRequestToAssistant(compactPayload);
+    if (!rawResponse) {
+      return;
+    }
+    const parsedSummary = parseAssistantSummary(rawResponse);
+    if (!parsedSummary) {
+      if (debug) {
+        // eslint-disable-next-line no-console
+        console.warn(`[summary] unable to parse summary for email ${args.emailId}`);
+      }
+      return;
+    }
+    await saveEmailSummary(args.emailId, parsedSummary, rawResponse);
+  }
+
   function isPdfAttachment(attachment: any): boolean {
     const contentType = String(attachment?.contentType || '').toLowerCase();
     const filename = String(attachment?.filename || '').toLowerCase();
     return contentType.includes('pdf') || filename.endsWith('.pdf');
   }
 
-  async function extractPdfTextFromBuffer(pdfBuffer: Buffer): Promise<string> {
+  function isPdfPasswordError(err: unknown): boolean {
+    const message = String((err as { message?: unknown })?.message || '').toLowerCase();
+    return message.includes('password') || message.includes('encrypted');
+  }
+
+  async function extractPdfTextWithPassword(pdfBuffer: Buffer, password?: string): Promise<string> {
     return new Promise<string>((resolve, reject) => {
-      const parser = new PDFParser(undefined, true, PDF_DEFAULT_PASSWORD || undefined);
+      const parser = new PDFParser(undefined, true, password || undefined);
       parser.on('pdfParser_dataError', (errData: any) => {
         const reason =
           errData?.parserError?.message ||
@@ -264,6 +459,19 @@ export function createEmailSync({
         reject(new Error(error?.message || 'Unable to parse PDF buffer'));
       }
     });
+  }
+
+  async function extractPdfTextFromBuffer(pdfBuffer: Buffer): Promise<string> {
+    try {
+      // First attempt with no password.
+      return await extractPdfTextWithPassword(pdfBuffer);
+    } catch (firstError: unknown) {
+      // If parsing indicates password/encryption and a default password exists, retry with configured password.
+      if (!isPdfPasswordError(firstError) || !PDF_DEFAULT_PASSWORD) {
+        throw firstError;
+      }
+      return await extractPdfTextWithPassword(pdfBuffer, PDF_DEFAULT_PASSWORD);
+    }
   }
 
   async function autoExtractPdfText(
@@ -391,14 +599,15 @@ export function createEmailSync({
     }
   }
 
-  async function upsertMessage(folderId: number, msg: any) {
+  async function upsertMessage(folderId: number, msg: any, options?: { allowSummary?: boolean }) {
     let eventType = 'mail_created';
     const existing = await dbGet(
       'SELECT id FROM email_messages WHERE folder_id = ? AND server_uid = ? LIMIT 1;',
       folderId,
       msg.uid,
     );
-    if (existing?.id) {
+    const isNewEmail = !existing?.id;
+    if (!isNewEmail) {
       eventType = 'mail_updated';
     }
 
@@ -491,6 +700,27 @@ export function createEmailSync({
             // eslint-disable-next-line no-console
             console.warn('failed to auto extract attachment text', err?.message);
           }
+        }
+      }
+    }
+
+    const allowSummary = options?.allowSummary !== false;
+    if (allowSummary && isNewEmail) {
+      try {
+        await maybeGenerateSummaryForNewEmail({
+          emailId: Number(row.id),
+          folderPath,
+          fromRaw: formatAddressList(msg.envelope?.from),
+          toRaw: formatAddressList(msg.envelope?.to),
+          subject: msg.envelope?.subject || null,
+          receivedAt: msg.internalDate ? new Date(msg.internalDate).toISOString() : null,
+          textBody,
+          attachments: parsedAttachments,
+        });
+      } catch (err: any) {
+        if (debug) {
+          // eslint-disable-next-line no-console
+          console.warn(`[summary] generation failed for email ${row.id}`, err?.message || 'unknown error');
         }
       }
     }
@@ -937,7 +1167,7 @@ export function createEmailSync({
                 await dbRun('UPDATE folders SET last_uid = ? WHERE id = ?;', maxUid, folder.id);
               }
             } catch (err: any) {
-              if (err?.code === 'NoConnection') {
+              if (isConnectionUnavailableError(err)) {
                 return;
               }
               // eslint-disable-next-line no-console
@@ -1003,7 +1233,7 @@ export function createEmailSync({
                 await dbRun('UPDATE folders SET last_uid = ? WHERE id = ?;', maxUid, folder.id);
               }
             } catch (err: any) {
-              if (err?.code === 'NoConnection') {
+              if (isConnectionUnavailableError(err)) {
                 return;
               }
               // eslint-disable-next-line no-console

@@ -81,6 +81,7 @@ type LlmPayload = {
   result?: string;
   source_channel?: string;
   source_from?: string;
+  skip_cache?: boolean;
   previous_sql?: string;
   error?: string;
   follow_up_context?: Array<{
@@ -100,10 +101,21 @@ type LlmResponse = {
   email?: {
     id: number;
     from_raw: string | null;
+    to_raw?: string | null;
     subject: string | null;
     received_at: string | null;
     body: string;
   };
+  email_id?: number;
+  from?: string;
+  to?: string;
+  subject?: string;
+  received_at?: string;
+  folder?: string;
+  subfolder?: string;
+  body_text?: string;
+  body_html?: string;
+  ai_summary?: string;
   summary?: string;
   attachment_details?: Array<{
     id: number;
@@ -114,6 +126,19 @@ type LlmResponse = {
     attachment_id: number;
     filename: string | null;
     extracted_text: string;
+  }>;
+  email_viewer_rows?: Array<{
+    id: number;
+    from_raw: string;
+    to_raw: string;
+    subject: string;
+    received_at: string;
+    folder: string;
+    subfolder: string;
+    body_text: string;
+    body_html: string;
+    attachments: string;
+    attachment_ids: string;
   }>;
   attachments?: Array<{
     attachment_id: number;
@@ -206,8 +231,11 @@ type FollowUpTurn = {
 const FOLLOW_UP_SESSION_KEY = 'default';
 const FOLLOW_UP_MAX_TURNS = 8;
 const WHATSAPP_INTENT_PHONE = '27714908172';
+const EMAIL_DISABLE_FOLLOW_UP_QUESTIONS = parseBooleanLike(
+  process.env.EMAIL_DISABLE_FOLLOW_UP_QUESTIONS ?? 'true',
+);
 const MAIL_SYNC_LLM_TIMEOUT_MS = Number.parseInt(process.env.MAIL_SYNC_LLM_TIMEOUT_MS || '8000', 10);
-const ASSISTANT_TIMEOUT_MS = Number.parseInt(process.env.ASSISTANT_TIMEOUT_MS || '90000', 10);
+const ASSISTANT_TIMEOUT_MS = Number.parseInt(process.env.ASSISTANT_TIMEOUT_MS || '180000', 10);
 const MAX_UI_ACTIONS = 12;
 
 function isWhatsappChannel(sourceChannel?: string): boolean {
@@ -368,6 +396,20 @@ async function runWithSoftTimeout<T>(
     });
   }
   return first;
+}
+
+function parseBooleanLike(value: unknown): boolean {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    return value === 1;
+  }
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    return normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on';
+  }
+  return false;
 }
 
 function extractSkipConfirmation(payload: unknown): boolean {
@@ -682,11 +724,20 @@ function isShowAttachmentsForEmailRequest(prompt: string): boolean {
 
 function isReadMailRequest(prompt: string): boolean {
   const text = prompt.toLowerCase();
-  const hasRead = /\b(read|open|show)\b/.test(text);
+  const hasExplicitReadVerb = /\b(read|open|summari[sz]e|summary)\b/.test(text);
+  const hasShowWithReadCue = /\bshow\b/.test(text) && /\b(body|content|details?|full)\b/.test(text);
+  const hasRead = hasExplicitReadVerb || hasShowWithReadCue;
   const hasMail = /\b(mail|email|message)\b/.test(text);
   const hasId = /\b\d+\b/.test(text);
   const hasRelativeRef = /\b(last|latest|most recent|newest|first|oldest|earliest)\b/.test(text);
   return hasRead && hasMail && (hasId || hasRelativeRef);
+}
+
+function isSummaryMailRequest(prompt: string): boolean {
+  const text = prompt.toLowerCase();
+  const hasSummary = /\b(summari[sz]e|summary)\b/.test(text);
+  const hasMail = /\b(mail|email|message)\b/.test(text);
+  return hasSummary && hasMail;
 }
 
 async function resolveReadMailTargetId(dbGet: DbGet, prompt: string): Promise<number | null> {
@@ -762,6 +813,14 @@ function isPluralAttachmentNamesRequest(prompt: string): boolean {
 function shouldReturnBinaryAttachment(prompt: string): boolean {
   const text = prompt.toLowerCase();
   return /\b(download|fetch|display)\b/.test(text);
+}
+
+function isDirectAttachmentFetchByIdRequest(prompt: string): boolean {
+  const hasAttachmentId = extractAttachmentIdForRequest(prompt) !== null;
+  if (!hasAttachmentId) {
+    return false;
+  }
+  return shouldReturnBinaryAttachment(prompt);
 }
 
 function isPdfMentioned(prompt: string): boolean {
@@ -2051,9 +2110,8 @@ function formatEmailRowsBasic(rows: any[], sourceChannel?: string): string {
     }
     const entry = grouped.get(key)!;
     for (const name of names) {
-      if (!entry.names.includes(name)) {
-        entry.names.push(name);
-      }
+      // Preserve duplicate filenames so repeated attachments (same name, different IDs) remain visible.
+      entry.names.push(name);
     }
     for (const attachmentId of idsFromAggregate) {
       if (!entry.ids.includes(attachmentId)) {
@@ -2076,6 +2134,8 @@ function formatEmailRowsBasic(rows: any[], sourceChannel?: string): string {
     let attachmentSummary = 'no';
     if (entry.ids.length > 0 && entry.names.length > 0 && entry.ids.length === entry.names.length) {
       attachmentSummary = entry.ids.map((id, idx) => `${id}: ${entry.names[idx]}`).join(', ');
+    } else if (entry.ids.length > 0 && entry.names.length > 0) {
+      attachmentSummary = `${entry.names.join(', ')} (attachment ids: ${entry.ids.join(', ')})`;
     } else if (entry.ids.length > 0 && entry.names.length === 0) {
       attachmentSummary = entry.ids.join(', ');
     } else if (entry.names.length > 0) {
@@ -3141,6 +3201,14 @@ function extractRequestedEmailLimit(prompt: string): number | null {
   if (/\b(all|everything|all emails|all mail|all messages)\b/.test(text)) {
     return null;
   }
+  if (
+    /\b(last|latest|most\s+recent|newest|first|oldest|earliest)\s+(email|mail|message)\b/i.test(prompt) ||
+    /\b(show|list|display|view|get|fetch|check)\b[\s\S]*\b(last|latest|most\s+recent|newest|first|oldest|earliest)\s+(email|mail|message)\b/i.test(
+      prompt,
+    )
+  ) {
+    return 1;
+  }
 
   const patterns = [
     /\b(?:last|latest|first|top|recent|newest|oldest)\s+(\d{1,4})\s+(?:emails?|mails?|messages?)\b/i,
@@ -3156,6 +3224,184 @@ function extractRequestedEmailLimit(prompt: string): number | null {
     return Math.min(Math.floor(value), 500);
   }
   return null;
+}
+
+async function buildEmailViewerRows(dbAll: DbAll, rows: any[]): Promise<Array<{
+  id: number;
+  from_raw: string;
+  to_raw: string;
+  subject: string;
+  received_at: string;
+  folder: string;
+  subfolder: string;
+  body_text: string;
+  body_html: string;
+  attachments: string;
+  attachment_ids: string;
+}>> {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return [];
+  }
+  const ids = Array.from(
+    new Set(
+      rows
+        .map((row) => Number(row?.id))
+        .filter((id) => Number.isFinite(id) && id > 0)
+        .map((id) => Math.floor(id)),
+    ),
+  );
+  if (ids.length === 0) {
+    return [];
+  }
+  const placeholders = ids.map(() => '?').join(', ');
+  const detailRows = await dbAll(
+    `SELECT email_messages.id AS id,
+            email_messages.from_raw AS from_raw,
+            email_messages.to_raw AS to_raw,
+            email_messages.subject AS subject,
+            email_messages.received_at AS received_at,
+            email_messages.text_body AS text_body,
+            email_messages.html_body AS body_html,
+            folders.name AS folder_name,
+            folders.path AS folder_path,
+            (SELECT GROUP_CONCAT(email_attachments.filename, ', ')
+             FROM email_attachments
+             WHERE email_attachments.email_id = email_messages.id) AS attachments,
+            (SELECT GROUP_CONCAT(email_attachments.id, ', ')
+             FROM email_attachments
+             WHERE email_attachments.email_id = email_messages.id) AS attachment_ids
+     FROM email_messages
+     INNER JOIN folders ON folders.id = email_messages.folder_id
+     WHERE email_messages.id IN (${placeholders});`,
+    ...ids,
+  );
+  const byId = new Map<number, any>();
+  for (const row of detailRows || []) {
+    const id = Number(row?.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      continue;
+    }
+    byId.set(Math.floor(id), row);
+  }
+  const result: Array<{
+    id: number;
+    from_raw: string;
+    to_raw: string;
+    subject: string;
+    received_at: string;
+    folder: string;
+    subfolder: string;
+    body_text: string;
+    body_html: string;
+    attachments: string;
+    attachment_ids: string;
+  }> = [];
+  for (const id of ids) {
+    const row = byId.get(id);
+    if (!row) {
+      continue;
+    }
+    const folderPath = typeof row.folder_path === 'string' ? row.folder_path : '';
+    const folderParts = splitFolderPath(folderPath);
+    result.push({
+      id,
+      from_raw: typeof row.from_raw === 'string' ? row.from_raw : '',
+      to_raw: typeof row.to_raw === 'string' ? row.to_raw : '',
+      subject: typeof row.subject === 'string' ? row.subject : '',
+      received_at: typeof row.received_at === 'string' ? row.received_at : '',
+      folder: (typeof row.folder_name === 'string' ? row.folder_name : folderParts.folder) || '',
+      subfolder: folderParts.subfolder || '',
+      body_text: typeof row.text_body === 'string' ? row.text_body : '',
+      body_html: typeof row.body_html === 'string' ? row.body_html : '',
+      attachments: typeof row.attachments === 'string' ? row.attachments : '',
+      attachment_ids: typeof row.attachment_ids === 'string' ? row.attachment_ids : '',
+    });
+  }
+  return result;
+}
+
+function isSimpleListEmailsPrompt(prompt: string): boolean {
+  const text = prompt.toLowerCase();
+  const hasMail = /\b(mail|mails|email|emails|message|messages|inbox)\b/.test(text);
+  if (!hasMail) {
+    return false;
+  }
+  const hasCountIntent = /\b(how\s+many|count|number\s+of)\b/.test(text);
+  if (hasCountIntent) {
+    return false;
+  }
+  const hasPossessiveList = /\bmy\s+(mail|mails|email|emails|inbox)\b/.test(text);
+  const hasListShape =
+    /\b(show|list|display|check|view|get)\b/.test(text) ||
+    /\b(last|latest|recent|newest|oldest|first)\b/.test(text) ||
+    hasPossessiveList;
+  if (!hasListShape) {
+    return false;
+  }
+  const hasNonListAction =
+    /\b(reply|respond|send|forward|delete|remove|move|archive|download|attachment|attachments|pdf|mark|unread|read\s+email)\b/.test(
+      text,
+    );
+  if (hasNonListAction) {
+    return false;
+  }
+  return true;
+}
+
+function isTodayMyMailsPrompt(prompt: string): boolean {
+  const text = String(prompt || '').toLowerCase().trim().replace(/\s+/g, ' ');
+  if (/^my (mails?|emails?)$/.test(text)) {
+    return true;
+  }
+  return /^(show|list|display|view|check) (?:me )?(?:my )?(mails?|emails?)$/.test(text);
+}
+
+function isCountMailRequest(prompt: string): boolean {
+  const text = prompt.toLowerCase();
+  const hasCount = /\b(how\s+many|count|number\s+of)\b/.test(text);
+  const hasMail = /\b(mail|mails|email|emails|message|messages)\b/.test(text);
+  return hasCount && hasMail;
+}
+
+function extractEmailSearchTerm(prompt: string): string | null {
+  const raw = String(prompt || '').trim();
+  if (!raw) {
+    return null;
+  }
+  const quoted = raw.match(/"([^"]{2,})"/);
+  if (quoted?.[1]) {
+    return quoted[1].trim();
+  }
+  const lower = raw.toLowerCase();
+  const fromMatch = lower.match(/\bfrom\s+([a-z0-9._%+\-@]+)\b/i);
+  if (fromMatch?.[1]) {
+    return fromMatch[1].trim();
+  }
+  const markerMatch = lower.match(/\b(?:for|about|containing|contains|matching|match)\s+(.+)$/i);
+  if (markerMatch?.[1]) {
+    return markerMatch[1].trim();
+  }
+  const searchPrefix = lower.match(/\b(?:search|find|lookup|look\s+for)\b\s+(.+)$/i);
+  if (searchPrefix?.[1]) {
+    return searchPrefix[1].trim();
+  }
+  return null;
+}
+
+function isExplicitEmailSearchPrompt(prompt: string): boolean {
+  const text = String(prompt || '').toLowerCase();
+  const hasMail = /\b(mail|mails|email|emails|message|messages|inbox)\b/.test(text);
+  if (!hasMail) {
+    return false;
+  }
+  const hasSearchIntent =
+    /\b(search|find|lookup|look\s+for)\b/.test(text) ||
+    /\b(containing|contains|matching|match|about)\b/.test(text) ||
+    /\bfrom\s+[a-z0-9._%+\-@]{3,}\b/.test(text);
+  if (!hasSearchIntent) {
+    return false;
+  }
+  return Boolean(extractEmailSearchTerm(prompt));
 }
 
 function wantsAllResults(prompt: string): boolean {
@@ -3191,17 +3437,17 @@ async function maybeExpandSenderScopedRows(
   wantsAll: boolean,
   currentRows: any[],
 ): Promise<{ rows: any[]; sql?: string }> {
-  if (!wantsAll && (!requestedLimit || requestedLimit <= 1)) {
-    return { rows: currentRows };
-  }
-  if (!wantsAll && Array.isArray(currentRows) && currentRows.length >= (requestedLimit || 0)) {
+  const senderTerm = extractSenderFilterTerm(prompt);
+  if (!senderTerm) {
     return { rows: currentRows };
   }
   if (promptHasExplicitFolderConstraint(prompt)) {
     return { rows: currentRows };
   }
-  const senderTerm = extractSenderFilterTerm(prompt);
-  if (!senderTerm) {
+  if (!wantsAll && (!requestedLimit || requestedLimit <= 1)) {
+    // Even without explicit LIMIT, sender-scoped prompts must be constrained by sender.
+    // Continue to sender fallback query.
+  } else if (!wantsAll && Array.isArray(currentRows) && currentRows.length >= (requestedLimit || 0)) {
     return { rows: currentRows };
   }
   const safeLimit = requestedLimit && requestedLimit > 0 ? requestedLimit : 10;
@@ -3222,10 +3468,9 @@ async function maybeExpandSenderScopedRows(
     `ORDER BY email_messages.received_at DESC, email_messages.id DESC`;
   const fallbackSql = wantsAll ? fallbackAllSql : fallbackLimitSql;
   const fallbackRows = await dbAll(fallbackSql, `%${senderTerm}%`);
-  if (fallbackRows.length > currentRows.length) {
-    return { rows: fallbackRows, sql: fallbackSql };
-  }
-  return { rows: currentRows };
+  // Sender-scoped prompts must return sender-scoped results only.
+  // Always prefer the sender-filtered fallback, even when it returns fewer rows.
+  return { rows: fallbackRows, sql: fallbackSql };
 }
 
 function applyRequestedLimit(sql: string, requestedLimit: number | null): string {
@@ -3264,8 +3509,8 @@ async function sendToAssistant(
   if (rawUrl.trim() === '') {
     // eslint-disable-next-line no-console
     console.log('Assistant call skipped: missing ASSISTANT_URL');
-    return null;
-  }
+  return null;
+}
 
   const url = rawUrl.match(/^https?:\/\//i) ? rawUrl : `http://${rawUrl}`;
 
@@ -3331,6 +3576,37 @@ async function sendToAssistant(
   return raw;
 }
 
+async function getCachedEmailSummary(dbGet: DbGet, emailId: number): Promise<string | null> {
+  const row = await dbGet(
+    'SELECT summary FROM email_llm_summaries WHERE email_id = ? LIMIT 1;',
+    emailId,
+  );
+  const summary = row?.summary ? String(row.summary).trim() : '';
+  return summary || null;
+}
+
+async function saveEmailSummaryCache(
+  dbRun: DbRun,
+  emailId: number,
+  summary: string,
+  model: string,
+  rawResponse: string,
+): Promise<void> {
+  await dbRun(
+    `INSERT INTO email_llm_summaries (email_id, summary, model, raw_response, updated_at)
+     VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+     ON CONFLICT(email_id) DO UPDATE SET
+       summary = excluded.summary,
+       model = excluded.model,
+       raw_response = excluded.raw_response,
+       updated_at = CURRENT_TIMESTAMP;`,
+    emailId,
+    summary,
+    model,
+    rawResponse,
+  );
+}
+
 function cacheKeyFor(prompt: string, result?: string): string {
   return `${prompt}||${result ?? ''}`.trim();
 }
@@ -3343,7 +3619,10 @@ function shouldBypassSqlCache(prompt: string): boolean {
   const hasRelativeRecencyRequest =
     /\b(last|latest|most\s+recent|newest|first)\b/.test(text) &&
     /\b(mail|email|message|sent)\b/.test(text);
-  return hasAttachmentConstraint || hasRelativeRecencyRequest;
+  const hasSenderScopedRequest =
+    /\bfrom\s+[a-z0-9._%+\-@]{2,}\b/.test(text) &&
+    /\b(mail|email|message|sent|inbox)\b/.test(text);
+  return hasAttachmentConstraint || hasRelativeRecencyRequest || hasSenderScopedRequest;
 }
 
 export function createLlmHandler({
@@ -3388,6 +3667,7 @@ export function createLlmHandler({
         : undefined;
     const skipConfirmation = extractSkipConfirmation(payload);
     const followUpHint = extractFollowUpHint(payload);
+    const skipCacheHint = parseBooleanLike((payload as { skip_cache?: unknown })?.skip_cache);
 
     if (!prompt) {
       return { success: false, message: 'Prompt is required.' };
@@ -3434,10 +3714,13 @@ export function createLlmHandler({
       result,
       source_channel: sourceChannel,
       source_from: sourceFrom,
+      skip_cache: skipCacheHint,
     };
     const followUpContext = await loadFollowUpContext(dbGet, dbAll);
     const hasFollowUpContext = followUpContext.length > 0;
-    if (hasFollowUpContext) {
+    if (EMAIL_DISABLE_FOLLOW_UP_QUESTIONS && hasFollowUpContext) {
+      await resetFollowUpContext(dbRun);
+    } else if (hasFollowUpContext) {
       requestPayload.follow_up_context = followUpContext;
     }
     const hasReplyFollowUpContext = followUpContext.some((turn) =>
@@ -3582,38 +3865,6 @@ export function createLlmHandler({
         }
       }
 
-      const summaryPrompt = buildEmailReadSummaryPrompt({
-        prompt,
-        email: {
-          id: Number(row.id),
-          from_raw: row?.from_raw ? String(row.from_raw) : null,
-          to_raw: row?.to_raw ? String(row.to_raw) : null,
-          cc_raw: row?.cc_raw ? String(row.cc_raw) : null,
-          bcc_raw: row?.bcc_raw ? String(row.bcc_raw) : null,
-          subject: row?.subject ? String(row.subject) : null,
-          received_at: row?.received_at ? String(row.received_at) : null,
-          folder: row?.folder_name ? String(row.folder_name) : null,
-          subfolder: row?.folder_path ? String(row.folder_path) : null,
-          text_body: row?.text_body ? String(row.text_body) : null,
-          html_body: row?.html_body ? String(row.html_body) : null,
-        },
-        attachments: attachments.map((attachment) => ({
-          id: attachment.id,
-          filename: attachment.filename,
-          content_type: attachment.content_type,
-          size: attachment.size,
-        })),
-        pdf_extractions: pdfExtractions,
-      });
-      const summaryRaw = await sendToAssistant(summaryPrompt, { model: 'qwen2.5-coder:14b' });
-      const summary = summaryRaw ? parseEmailReadSummary(summaryRaw) : null;
-      const summaryMessage =
-        summary?.ai_summary && summary.ai_summary.trim().length > 0
-          ? summary.ai_summary.trim()
-          : 'No concise summary available.';
-      const sanitizedSummaryMessage = /\b(can[’']?t|cannot|unable)\b[\s\S]{0,80}\b(access|read|open)\b/i.test(summaryMessage)
-        ? 'Summary generated from the email body and available attachment content.'
-        : summaryMessage;
       const folderParts = splitFolderPath(row?.folder_path);
       const normalizedHtmlBody =
         typeof row?.html_body === 'string' && row.html_body.trim().length > 0
@@ -3622,41 +3873,71 @@ export function createLlmHandler({
       const normalizedBody =
         typeof row?.text_body === 'string' && row.text_body.trim().length > 0
           ? normalizeWhitespace(String(row.text_body))
-          : '(no body)';
-      const viewerData: EmailReadSummaryResult = summary ?? {
-        email_id: String(row.id ?? ''),
+          : '';
+      let summaryText = await getCachedEmailSummary(dbGet, emailId);
+      const wantsSummary = isSummaryMailRequest(prompt);
+      if (!summaryText || wantsSummary) {
+        const summaryPrompt = buildEmailReadSummaryPrompt({
+          prompt,
+          email: {
+            id: emailId,
+            from_raw: row?.from_raw ? String(row.from_raw) : null,
+            to_raw: row?.to_raw ? String(row.to_raw) : null,
+            cc_raw: row?.cc_raw ? String(row.cc_raw) : null,
+            bcc_raw: row?.bcc_raw ? String(row.bcc_raw) : null,
+            subject: row?.subject ? String(row.subject) : null,
+            received_at: row?.received_at ? String(row.received_at) : null,
+            folder: row?.folder_name ? String(row.folder_name) : folderParts.folder,
+            subfolder: folderParts.subfolder,
+            text_body: normalizedBody || null,
+            html_body: normalizedHtmlBody || null,
+          },
+          attachments: attachments.map((attachment) => ({
+            id: Number(attachment.id || 0),
+            filename: attachment.filename || null,
+            content_type: attachment.content_type || null,
+            size: attachment.size ?? null,
+          })),
+          pdf_extractions: pdfExtractions,
+        });
+        const summaryRaw = await sendToAssistant(summaryPrompt, { model: 'qwen2.5-coder:14b' });
+        const parsedSummary = summaryRaw ? parseEmailReadSummary(summaryRaw) : null;
+        const generatedSummary =
+          parsedSummary && typeof parsedSummary.ai_summary === 'string'
+            ? parsedSummary.ai_summary.trim()
+            : '';
+        if (generatedSummary) {
+          summaryText = generatedSummary;
+          await saveEmailSummaryCache(dbRun, emailId, generatedSummary, 'qwen2.5-coder:14b', summaryRaw || '');
+        } else if (!summaryText) {
+          summaryText = '';
+        }
+      }
+      const structuredPayload = {
+        email_id: Number(row.id),
         from: row?.from_raw ? String(row.from_raw) : '',
         to: row?.to_raw ? String(row.to_raw) : '',
-        cc: parseAddressItems(row?.cc_raw),
-        bcc: parseAddressItems(row?.bcc_raw),
         subject: row?.subject ? String(row.subject) : '',
-        received_at: formatReceivedAtHuman(row?.received_at),
+        received_at: row?.received_at ? String(row.received_at) : '',
         folder: row?.folder_name ? String(row.folder_name) : folderParts.folder,
         subfolder: folderParts.subfolder,
-        body_text: normalizedBody === '(no body)' ? '' : normalizedBody,
+        body_text: normalizedBody,
         body_html: normalizedHtmlBody,
-        ai_summary: sanitizedSummaryMessage,
-        attachments: attachments.map((attachment) => ({
-          id: String(attachment.id),
-          name: attachment.filename || '',
-          mime_type: attachment.content_type || '',
-          size_bytes: Number.isFinite(Number(attachment.size)) ? Number(attachment.size) : 0,
-        })),
-      };
-      const structuredPayload = {
+        ai_summary: summaryText || '',
         email: {
-          id: Number(viewerData.email_id || row.id),
-          from_raw: viewerData.from || (row?.from_raw ? String(row.from_raw) : null),
-          subject: viewerData.subject || (row?.subject ? String(row.subject) : null),
-          received_at: viewerData.received_at || (row?.received_at ? String(row.received_at) : null),
-          body: viewerData.body_html || viewerData.body_text || normalizedBody,
+          id: Number(row.id),
+          from_raw: row?.from_raw ? String(row.from_raw) : null,
+          to_raw: row?.to_raw ? String(row.to_raw) : null,
+          subject: row?.subject ? String(row.subject) : null,
+          received_at: row?.received_at ? String(row.received_at) : null,
+          body: normalizedHtmlBody || normalizedBody || '(no body)',
         },
-        attachment_details: viewerData.attachments.map((attachment) => ({
+        attachment_details: attachments.map((attachment) => ({
           id: Number(attachment.id || 0),
-          filename: attachment.name || null,
-          content_type: attachment.mime_type || null,
+          filename: attachment.filename || null,
+          content_type: attachment.content_type || null,
         })),
-        summary: viewerData.ai_summary || sanitizedSummaryMessage,
+        summary: summaryText || '',
         pdf_sections: pdfExtractions,
       };
       const attachmentSummary =
@@ -3723,6 +4004,16 @@ export function createLlmHandler({
         type: 'message',
         message: summaryOutputMessage,
         email: structuredPayload.email,
+        email_id: structuredPayload.email_id,
+        from: structuredPayload.from,
+        to: structuredPayload.to,
+        subject: structuredPayload.subject,
+        received_at: structuredPayload.received_at,
+        folder: structuredPayload.folder,
+        subfolder: structuredPayload.subfolder,
+        body_text: structuredPayload.body_text,
+        body_html: structuredPayload.body_html,
+        ai_summary: structuredPayload.ai_summary,
         attachment_details: structuredPayload.attachment_details,
         summary: structuredPayload.summary,
         pdf_sections: structuredPayload.pdf_sections,
@@ -4491,9 +4782,182 @@ export function createLlmHandler({
 
     const isFollowUpRound = hasFollowUpContext || followUpHint;
 
+    if (isCountMailRequest(prompt) && !isFollowUpRound) {
+      const folderHint = extractFolderHint(prompt);
+      if (!folderHint) {
+        return {
+          success: true,
+          type: 'message',
+          message: "Which folder would you like to check for the number of emails? You can specify 'inbox', 'sent', 'archive', or 'trash'.",
+          'follow-up-question': true,
+          follow_up_question: true,
+        };
+      }
+
+      let whereClause = '';
+      let params: unknown[] = [];
+      const normalizedFolder = folderHint.toLowerCase();
+      if (normalizedFolder === 'inbox') {
+        whereClause = "(LOWER(folders.name) = 'inbox' OR LOWER(folders.path) = 'inbox')";
+      } else if (normalizedFolder === 'sent') {
+        whereClause = "(LOWER(folders.name) = 'sent' OR LOWER(folders.path) = 'inbox.sent')";
+      } else if (normalizedFolder === 'trash') {
+        whereClause = "(LOWER(folders.name) = 'trash' OR LOWER(folders.path) LIKE '%trash%')";
+      } else if (normalizedFolder === 'archive' || normalizedFolder === 'archived') {
+        whereClause = "(LOWER(folders.name) LIKE '%archive%' OR LOWER(folders.path) LIKE '%archive%')";
+      } else {
+        whereClause = '(LOWER(folders.name) = ? OR LOWER(folders.path) LIKE ?)';
+        params = [normalizedFolder, `%${normalizedFolder}%`];
+      }
+
+      const sql =
+        `SELECT COUNT(email_messages.id) AS total_count ` +
+        `FROM email_messages ` +
+        `INNER JOIN folders ON email_messages.folder_id = folders.id ` +
+        `WHERE ${whereClause};`;
+      const rows = await dbAll(sql, ...params);
+      const total = Number(rows?.[0]?.total_count ?? 0);
+      const label = normalizedFolder === 'archived' ? 'archive' : normalizedFolder;
+      return {
+        success: true,
+        sql,
+        rows,
+        message: `Total emails in ${label}: ${Number.isFinite(total) ? total : 0}`,
+      };
+    }
+
+    if (!isFollowUpRound && isDirectAttachmentFetchByIdRequest(prompt)) {
+      const response = await handleAttachmentIntent({
+        dbAll,
+        dbGet,
+        dbRun,
+        prompt,
+        mode: 'fetch',
+        sourceChannel,
+      });
+      if (hasFollowUpContext) {
+        await resetFollowUpContext(dbRun);
+      }
+      return response;
+    }
+
+    if (isSimpleListEmailsPrompt(prompt) && !isFollowUpRound) {
+      const wantAllDirect = wantsAllResults(prompt);
+      const requestedLimitDirect = extractRequestedEmailLimit(prompt);
+      const senderTermDirect = extractSenderFilterTerm(prompt);
+      const todayMyMails = isTodayMyMailsPrompt(prompt);
+      const now = new Date();
+      const startOfLocalDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+      const startOfNextLocalDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0);
+      const safeLimit = wantAllDirect
+        ? 500
+        : requestedLimitDirect && requestedLimitDirect > 0
+          ? requestedLimitDirect
+          : 10;
+      const directSqlBase =
+        `SELECT email_messages.id, email_messages.from_raw, email_messages.subject, email_messages.received_at, ` +
+        `(SELECT GROUP_CONCAT(filename, ', ') FROM email_attachments WHERE email_attachments.email_id = email_messages.id) AS attachments ` +
+        `FROM email_messages `;
+      const directWhere = senderTermDirect
+        ? `WHERE LOWER(COALESCE(email_messages.from_raw, '')) LIKE ? AND email_messages.received_at IS NOT NULL `
+        : `WHERE email_messages.received_at IS NOT NULL `;
+      const directWhereWithToday = todayMyMails
+        ? `${directWhere}AND email_messages.received_at >= ? AND email_messages.received_at < ? `
+        : directWhere;
+      const directOrder = `ORDER BY email_messages.received_at DESC, email_messages.id DESC `;
+      const directLimit = wantAllDirect || todayMyMails ? '' : `LIMIT ${safeLimit}`;
+      const directSql = `${directSqlBase}${directWhereWithToday}${directOrder}${directLimit}`.trim();
+      const directRowsParams: unknown[] = [];
+      if (senderTermDirect) {
+        directRowsParams.push(`%${senderTermDirect}%`);
+      }
+      if (todayMyMails) {
+        directRowsParams.push(startOfLocalDay.toISOString(), startOfNextLocalDay.toISOString());
+      }
+      const directRows = await dbAll(directSql, ...directRowsParams);
+      const wantsDetailed = isDetailedEmailRequest(prompt);
+      const responseRows = wantsDetailed ? await enrichRowsWithTextBody(dbAll, directRows) : directRows;
+      const emailViewerRows = await buildEmailViewerRows(dbAll, responseRows);
+      const humanMessage = wantsDetailed
+        ? formatEmailRowsDetailed(responseRows, sourceChannel)
+        : formatEmailRowsBasic(responseRows, sourceChannel);
+      const uiActions = buildUiActionsForEmailRows(responseRows, sourceChannel);
+      const responsePayload = {
+        success: true,
+        sql: directSql,
+        rows: responseRows,
+        email_viewer_rows: emailViewerRows,
+        message: humanMessage ?? undefined,
+        ui_actions: uiActions,
+      };
+      // eslint-disable-next-line no-console
+      console.log('LLM response payload ->', JSON.stringify(responsePayload));
+      return responsePayload;
+    }
+
+    if (isExplicitEmailSearchPrompt(prompt) && !isFollowUpRound) {
+      const wantAllSearch = wantsAllResults(prompt);
+      const requestedLimitSearch = extractRequestedEmailLimit(prompt);
+      const safeLimit = wantAllSearch
+        ? 500
+        : requestedLimitSearch && requestedLimitSearch > 0
+          ? requestedLimitSearch
+          : 10;
+      const searchTerm = extractEmailSearchTerm(prompt) || '';
+      const lowered = searchTerm.toLowerCase().trim();
+      const tokens = lowered
+        .split(/[^a-z0-9@._%+\-]+/g)
+        .map((token) => token.trim())
+        .filter((token) => token.length >= 2);
+      const params: unknown[] = [];
+      const clauses: string[] = [];
+      const haystack =
+        "LOWER(COALESCE(email_messages.from_raw, '') || ' ' || COALESCE(email_messages.subject, '') || ' ' || COALESCE(email_messages.text_body, ''))";
+      if (lowered.length > 0) {
+        clauses.push(`${haystack} LIKE ?`);
+        params.push(`%${lowered}%`);
+      }
+      for (const token of tokens.slice(0, 8)) {
+        clauses.push(`${haystack} LIKE ?`);
+        params.push(`%${token}%`);
+      }
+      if (clauses.length === 0) {
+        return { success: true, message: 'Please provide a search term.' };
+      }
+      const whereClause = clauses.length === 1 ? clauses[0] : `(${clauses.join(' AND ')})`;
+      const searchSqlBase =
+        `SELECT email_messages.id, email_messages.from_raw, email_messages.subject, email_messages.received_at, ` +
+        `(SELECT GROUP_CONCAT(filename, ', ') FROM email_attachments WHERE email_attachments.email_id = email_messages.id) AS attachments ` +
+        `FROM email_messages ` +
+        `WHERE ${whereClause} ` +
+        `AND email_messages.received_at IS NOT NULL ` +
+        `ORDER BY email_messages.received_at DESC, email_messages.id DESC`;
+      const searchSql = wantAllSearch ? searchSqlBase : `${searchSqlBase} LIMIT ${safeLimit}`;
+      const searchRows = await dbAll(searchSql, ...params);
+      const wantsDetailed = isDetailedEmailRequest(prompt);
+      const responseRows = wantsDetailed ? await enrichRowsWithTextBody(dbAll, searchRows) : searchRows;
+      const emailViewerRows = await buildEmailViewerRows(dbAll, responseRows);
+      const humanMessage = wantsDetailed
+        ? formatEmailRowsDetailed(responseRows, sourceChannel)
+        : formatEmailRowsBasic(responseRows, sourceChannel);
+      const uiActions = buildUiActionsForEmailRows(responseRows, sourceChannel);
+      const responsePayload = {
+        success: true,
+        sql: searchSql,
+        rows: responseRows,
+        email_viewer_rows: emailViewerRows,
+        message: humanMessage ?? undefined,
+        ui_actions: uiActions,
+      };
+      // eslint-disable-next-line no-console
+      console.log('LLM response payload ->', JSON.stringify(responsePayload));
+      return responsePayload;
+    }
+
     const cacheEnabled =
       String(process.env.CACHE_QUERRIES || 'false').toLowerCase() === 'true' &&
       !skipSqlCacheForRequest &&
+      !skipCacheHint &&
       !shouldBypassSqlCache(prompt) &&
       !isFollowUpRound;
     const wantAll = wantsAllResults(prompt);
@@ -4521,6 +4985,7 @@ export function createLlmHandler({
             const finalSql = expanded.sql || effectiveCachedSql;
             const wantsDetailed = isDetailedEmailRequest(prompt);
             const responseRows = wantsDetailed ? await enrichRowsWithTextBody(dbAll, finalRows) : finalRows;
+            const emailViewerRows = await buildEmailViewerRows(dbAll, responseRows);
             const humanMessage = wantsDetailed
               ? formatEmailRowsDetailed(responseRows, sourceChannel)
               : formatEmailRowsBasic(responseRows, sourceChannel);
@@ -4529,6 +4994,7 @@ export function createLlmHandler({
               success: true,
               sql: finalSql,
               rows: responseRows,
+              email_viewer_rows: emailViewerRows,
               message: humanMessage ?? undefined,
               ui_actions: uiActions,
             };
@@ -4558,6 +5024,19 @@ export function createLlmHandler({
         return { success: false, message: 'Unable to generate SQL.' };
       }
       if (emailSql.follow_up_question) {
+        if (EMAIL_DISABLE_FOLLOW_UP_QUESTIONS) {
+          attempt += 1;
+          if (attempt >= maxAttempts) {
+            return {
+              success: false,
+              message: 'Unable to resolve request details without follow-up. Please rephrase with specific details.',
+            };
+          }
+          requestPayload.follow_up_context = undefined;
+          requestPayload.previous_sql = '';
+          requestPayload.error = 'Follow-up questions are disabled. Return a best-effort SQL response.';
+          continue;
+        }
         const followUpMessage =
           typeof emailSql.follow_up_message === 'string' && emailSql.follow_up_message.trim().length > 0
             ? emailSql.follow_up_message.trim()
@@ -4608,6 +5087,7 @@ export function createLlmHandler({
         const finalSql = expanded.sql || candidateSql;
         const wantsDetailed = isDetailedEmailRequest(prompt);
         const responseRows = wantsDetailed ? await enrichRowsWithTextBody(dbAll, finalRows) : finalRows;
+        const emailViewerRows = await buildEmailViewerRows(dbAll, responseRows);
         const humanMessage = wantsDetailed
           ? formatEmailRowsDetailed(responseRows, sourceChannel)
           : formatEmailRowsBasic(responseRows, sourceChannel);
@@ -4616,6 +5096,7 @@ export function createLlmHandler({
           success: true,
           sql: finalSql,
           rows: responseRows,
+          email_viewer_rows: emailViewerRows,
           message: humanMessage ?? undefined,
           ui_actions: uiActions,
         };

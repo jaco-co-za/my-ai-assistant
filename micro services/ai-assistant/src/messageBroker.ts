@@ -82,6 +82,7 @@ export type BrokerResult = {
   uuid?: string;
   followUpRoute?: string;
   notify?: boolean;
+  payload?: Record<string, unknown>;
   uiActions?: {
     type: string;
     label: string;
@@ -93,6 +94,10 @@ export type BrokerResult = {
     contentType: string;
     dataBase64: string;
   }[];
+};
+
+export type CompileOptions = {
+  skipCache?: boolean;
 };
 
 
@@ -565,6 +570,7 @@ export async function classifyAndCompile(
   fromSystem?: string,
   message?: string,
   uuid?: string,
+  options?: CompileOptions,
 ): Promise<BrokerResult> {
   try {
     if (!fromSystem || !message || !uuid) {
@@ -577,11 +583,11 @@ export async function classifyAndCompile(
     }
 
     if (normalizedFrom === "whatsapp") {
-      return compileWhatsapp(uuid, message, fromSystem);
+      return compileWhatsapp(uuid, message, fromSystem, options);
     }
 
     if (normalizedFrom === "queue-ui") {
-      return compileUI(uuid, message, fromSystem);
+      return compileUI(uuid, message, fromSystem, options);
     }
 
     if (normalizedFrom === "custom-prompt") {
@@ -589,7 +595,7 @@ export async function classifyAndCompile(
     }
 
     if (normalizedFrom === "cron") {
-      return compileCron(uuid, message, fromSystem);
+      return compileCron(uuid, message, fromSystem, options);
     }
 
     return { success: false, code: 400, msg: "unsupported fromSystem" };
@@ -601,11 +607,24 @@ export async function classifyAndCompile(
 
 function getTopicOverride(message: string): TopicResult | null {
   const normalizedMessage = message.trim().toLowerCase();
+  const isDirectAttachmentIdCommand = isExplicitAttachmentIdCommand(normalizedMessage);
+  if (isDirectAttachmentIdCommand) {
+    return { topic: "email", contextRequired: false };
+  }
   const hasEmailKeyword = /\b(email|emails|mail|mails|inbox|inbound|sent)\b/i.test(normalizedMessage);
+  const hasPossessiveEmailRequest =
+    /\bmy\b/.test(normalizedMessage) &&
+    /\b(email|emails|mail|mails|inbox)\b/.test(normalizedMessage);
+  if (hasPossessiveEmailRequest) {
+    return { topic: "email", contextRequired: false };
+  }
   const hasEmailActionKeyword =
     /\b(show|list|read|check|find|search|count|reply|forward|delete|move|archive|download)\b/i.test(
       normalizedMessage,
     );
+  const hasEmailRecencyKeyword =
+    /\b(last|latest|recent|newest|oldest|first)\b/i.test(normalizedMessage) ||
+    /\b\d+\b/.test(normalizedMessage);
   const hasDateFilterKeyword =
     normalizedMessage.includes("today") ||
     normalizedMessage.includes("yesterday") ||
@@ -613,7 +632,7 @@ function getTopicOverride(message: string): TopicResult | null {
     normalizedMessage.includes("this week") ||
     normalizedMessage.includes("this month") ||
     /\b\d{4}-\d{2}-\d{2}\b/.test(normalizedMessage);
-  if (hasEmailKeyword && (hasEmailActionKeyword || hasDateFilterKeyword)) {
+  if (hasEmailKeyword && (hasEmailActionKeyword || hasDateFilterKeyword || hasEmailRecencyKeyword)) {
     return { topic: "email", contextRequired: false };
   }
   const hasMarkAllReadPattern =
@@ -703,6 +722,16 @@ function getTopicOverride(message: string): TopicResult | null {
     return { topic: "web", contextRequired: false };
   }
   return null;
+}
+
+function isExplicitAttachmentIdCommand(message: string): boolean {
+  const normalizedMessage = message.trim().toLowerCase();
+  return (
+    /\b(?:display|download|fetch|get|open|show)\s+(?:the\s+)?(?:attachment|attachement|file)(?:\s+id)?\s*[#: ]\s*\d+\b/i.test(
+      normalizedMessage,
+    ) ||
+    /\b(?:attachment|attachement|file)(?:\s+id)?\s*[#: ]\s*\d+\b/i.test(normalizedMessage)
+  );
 }
 
 function parseKeyValueArgs(text: string): Record<string, string> {
@@ -1310,17 +1339,19 @@ async function compileByTopic(
   channelLabel: string,
   fromForSchedule: string,
   confirmKey: string,
+  options?: CompileOptions,
 ): Promise<BrokerResult> {
+  const skipCache = Boolean(options?.skipCache);
   const provider = getLlmProviderLabel();
   console.log(`[llm] provider=${provider} channel=${channelLabel} uuid=${uuid}`);
   broadcastEvent("llm", `provider=${provider} channel=${channelLabel}`);
 
   const runTopicHandler = async (topic: string, inputMessage: string): Promise<BrokerResult> => {
     if (topic === "homeassistant") {
-      return handleHomeAssistant(uuid, inputMessage, confirmKey);
+      return handleHomeAssistant(uuid, inputMessage, confirmKey, { skipCache });
     }
     if (topic === "email") {
-      return handleEmail(uuid, inputMessage, confirmKey);
+      return handleEmail(uuid, inputMessage, confirmKey, { skipCache });
     }
     if (topic === "schedule") {
       return handleSchedule(uuid, confirmKey, inputMessage);
@@ -1356,6 +1387,15 @@ async function compileByTopic(
   if (notifyCommand) {
     return { ...notifyCommand, uuid };
   }
+  const explicitAttachmentIdCommand = isExplicitAttachmentIdCommand(message);
+  if (explicitAttachmentIdCommand) {
+    clearFollowUpRoute(confirmKey);
+    clearFollowUpTurns(confirmKey);
+    console.log(`[followup-route] session=${confirmKey} cleared=true reason=direct-attachment-id`);
+    console.log(`[followup] session=${confirmKey} cleared=true reason=direct-attachment-id`);
+    const directAttachmentResult = await runTopicHandler("email", message);
+    return applyNotificationContract(directAttachmentResult, message, channelLabel);
+  }
   const followUpRoute = getFollowUpRoute(confirmKey);
   if (followUpRoute) {
     console.log(`[followup-route] session=${confirmKey} forced_topic=${followUpRoute.topic}`);
@@ -1379,7 +1419,7 @@ async function compileByTopic(
     console.log(`[followup] session=${confirmKey} applied=true turns=${followUpTurns.length}`);
   }
   const override = getTopicOverride(message);
-  const cached = override || followUpTurns.length > 0 ? null : getCachedClassification(message);
+  const cached = override || followUpTurns.length > 0 || skipCache ? null : getCachedClassification(message);
   let topicResult: TopicResult = override
     ? override
     : cached
@@ -1417,7 +1457,7 @@ async function compileByTopic(
   const classificationEligibleForCache =
     !override && !cached && followUpTurns.length === 0 && !followUpRoute && topic !== "unknown" && topic !== "general";
   const isFollowUpInteraction = Boolean(result.followUpRoute) || isFollowUpQuestion(result.msg);
-  if (classificationEligibleForCache && !isFollowUpInteraction) {
+  if (!skipCache && classificationEligibleForCache && !isFollowUpInteraction) {
     setCachedClassification(message, topic);
   } else if (isFollowUpInteraction || followUpTurns.length > 0 || followUpRoute || topic === "general") {
     clearCachesForPrompt(message);
@@ -1440,12 +1480,12 @@ async function compileByTopic(
   return applyNotificationContract(result, dispatchMessage, channelLabel);
 }
 
-export async function compileWhatsapp(uuid?: string, message?: string, fromKey?: string): Promise<BrokerResult> {
+export async function compileWhatsapp(uuid?: string, message?: string, fromKey?: string, options?: CompileOptions): Promise<BrokerResult> {
   try {
     if (!uuid || !message) {
       return { success: false, code: 400, msg: "missing parameter" };
     }
-    const result = await compileByTopic(uuid, message, "whatsapp", "whatsapp", fromKey ?? "whatsapp");
+    const result = await compileByTopic(uuid, message, "whatsapp", "whatsapp", fromKey ?? "whatsapp", options);
     if (result.notify) {
       broadcastEvent("notify", result.msg);
     }
@@ -1456,12 +1496,12 @@ export async function compileWhatsapp(uuid?: string, message?: string, fromKey?:
   }
 }
 
-export async function compileUI(uuid?: string, message?: string, fromKey?: string): Promise<BrokerResult> {
+export async function compileUI(uuid?: string, message?: string, fromKey?: string, options?: CompileOptions): Promise<BrokerResult> {
   try {
     if (!uuid || !message) {
       return { success: false, code: 400, msg: "missing parameter" };
     }
-    return compileByTopic(uuid, message, "queue-ui", "queue-ui", fromKey ?? "queue-ui");
+    return compileByTopic(uuid, message, "queue-ui", "queue-ui", fromKey ?? "queue-ui", options);
   } catch (error) {
     const msg = error instanceof Error ? error.message : "unknown error";
     return { success: false, code: 500, msg };
@@ -1490,6 +1530,7 @@ export async function compileCron(
   uuid?: string,
   message?: string,
   fromSystem?: string,
+  options?: CompileOptions,
 ): Promise<BrokerResult> {
   try {
     if (!uuid || !message || !fromSystem) {
@@ -1497,7 +1538,7 @@ export async function compileCron(
     }
 
     cleanupNonRunnableCrons();
-    const result = await compileByTopic(uuid, message, "cron", fromSystem, fromSystem);
+    const result = await compileByTopic(uuid, message, "cron", fromSystem, fromSystem, options);
     broadcastEvent("chronicle response", result.msg);
     if (result.notify) {
       broadcastEvent("notify", result.msg);
