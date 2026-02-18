@@ -19,10 +19,10 @@ const PORT = Number.parseInt(process.env.PORT || '3224', 10);
 const SKIP_AUTH = String(process.env.SKIP_AUTH || 'false').toLowerCase() === 'true';
 const AUTH_BEARER_TOKEN = process.env.AUTH_BEARER_TOKEN || '';
 
-const S3_ENDPOINT = process.env.S3_ENDPOINT || 'http://localhost:9000';
+const S3_ENDPOINT = process.env.S3_ENDPOINT || 'http://192.168.55.113:9000';
 const S3_REGION = process.env.S3_REGION || 'us-east-1';
-const S3_ACCESS_KEY = process.env.S3_ACCESS_KEY || 'minioadmin';
-const S3_SECRET_KEY = process.env.S3_SECRET_KEY || 'minioadmin';
+const S3_ACCESS_KEY = process.env.S3_ACCESS_KEY || 'aiassist';
+const S3_SECRET_KEY = process.env.S3_SECRET_KEY || 'MASEHARRE@123';
 const S3_DEFAULT_BUCKET = process.env.S3_DEFAULT_BUCKET || 'files';
 const S3_FORCE_PATH_STYLE = String(process.env.S3_FORCE_PATH_STYLE || 'true').toLowerCase() === 'true';
 

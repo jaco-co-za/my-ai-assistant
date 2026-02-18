@@ -21,6 +21,13 @@
       "request": "launch",
       "command": "yarn dev",
       "cwd": "${workspaceFolder}/micro services/mss-homeassistant"
+    },
+    {
+      "name": "Dev: mservice-file",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "npm run dev",
+      "cwd": "${workspaceFolder}/micro services/mservice-file"
     }
   ],
   "compounds": [
@@ -29,7 +36,8 @@
       "configurations": [
         "Dev: ai-assistant",
         "Dev: mservice-email",
-        "Dev: mss-homeassistant"
+        "Dev: mss-homeassistant",
+        "Dev: mservice-file"
       ]
     }
   ]

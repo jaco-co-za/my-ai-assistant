@@ -9,12 +9,6 @@ import {
 import { shouldBypassVerify } from "./ollamaClient.js";
 import { createChronicleEvent } from "./chronicle.js";
 import { DateTime } from "luxon";
-import { getDatabase } from "./database.js";
-import { randomUUID } from "node:crypto";
-
-const CONFIRM_TTL_MS = Number(process.env.CONFIRM_TTL_SEC ?? "") > 0
-  ? Number(process.env.CONFIRM_TTL_SEC) * 1000
-  : 120_000;
 
 function isReminderScheduleRequest(message: string): boolean {
   const lowered = message.trim().toLowerCase();
@@ -49,35 +43,6 @@ function toChronicleAction(message: string, action: string): string {
   }
   const reminder = normalizeReminderText(actionText);
   return reminder ? `notify me ${reminder}` : `notify me ${actionText}`;
-}
-
-function createScheduleConfirmation(from: string, message: string): void {
-  const db = getDatabase();
-  const id = randomUUID();
-  const createdAt = new Date().toISOString();
-  const expiresAt = new Date(Date.now() + CONFIRM_TTL_MS).toISOString();
-  const payload = JSON.stringify({
-    schedule_from: from,
-    schedule_message: message,
-  });
-  db.prepare(
-    `INSERT INTO pending_confirmations (id, "from", action, payload, created_at, expires_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run(id, from, "schedule-confirm", payload, createdAt, expiresAt);
-}
-
-function toPendingConfirmationMessage(message: string): string {
-  const trimmed = message.trim();
-  if (!trimmed) {
-    return "Schedule ready.";
-  }
-  if (/^saved\b/i.test(trimmed)) {
-    return trimmed.replace(/^saved\b/i, "Ready");
-  }
-  if (/^schedule saved\b/i.test(trimmed)) {
-    return trimmed.replace(/^schedule saved\b/i, "Schedule ready");
-  }
-  return `Ready: ${trimmed}`;
 }
 
 export async function handleSchedule(
@@ -183,18 +148,6 @@ export async function handleSchedule(
   const fallback = extracted.summary
     ? `Schedule saved for ${extracted.summary}`
     : "Schedule saved.";
-  const confirmationMessage = responseMessage || fallback;
-
-  if (!options?.skipConfirmation) {
-    createScheduleConfirmation(from, message);
-    const pendingMessage = toPendingConfirmationMessage(confirmationMessage);
-    return {
-      success: true,
-      code: 200,
-      msg: `${pendingMessage} Reply YES to confirm or NO to cancel.`,
-      uuid,
-    };
-  }
 
   const chronicleResult = await createChronicleEvent({
     refId: uuid,

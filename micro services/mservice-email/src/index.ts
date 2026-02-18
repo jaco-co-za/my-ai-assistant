@@ -3,12 +3,13 @@ import dotenv from 'dotenv';
 import sqlite3 from 'sqlite3';
 import nodemailer from 'nodemailer';
 import { promisify } from 'node:util';
-import { mkdir, writeFile, access, rm } from 'node:fs/promises';
+import { mkdir, writeFile, access } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { createEmailSync } from './emailSync.js';
 import { ImapFlow } from 'imapflow';
 import { chunkUids } from './helpers.js';
 import { registerEndpoints } from './endpoints.js';
+import { deleteAttachmentObject, getAttachmentStorageMode } from './attachmentStorage.js';
 
 // Load environment variables from .env if present
 dotenv.config();
@@ -217,7 +218,7 @@ async function deleteAttachmentFiles(emailIds: number[]) {
   );
   for (const row of rows) {
     if (row?.storage_path) {
-      await rm(row.storage_path, { force: true }).catch(() => {});
+      await deleteAttachmentObject(String(row.storage_path), ATTACHMENTS_DIR).catch(() => {});
     }
   }
 }
@@ -870,6 +871,8 @@ async function start() {
   await initDb();
   // eslint-disable-next-line no-console
   console.log('[email-micro-service] sqlite ready');
+  // eslint-disable-next-line no-console
+  console.log(`[email-micro-service] attachment storage mode ${getAttachmentStorageMode()}`);
 
   const emailSync = createEmailSync({
     dbGet,

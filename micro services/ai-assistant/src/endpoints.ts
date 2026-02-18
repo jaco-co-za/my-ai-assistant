@@ -183,11 +183,20 @@ function resolveShowSendNoCacheButton(): string {
   return raw === "true" || raw === "1" || raw === "yes" || raw === "on" ? "true" : "false";
 }
 
+function resolveS3BrowserBaseUrl(): string {
+  const raw = (process.env.UI_S3_BROWSER_BASE_URL ?? "").trim();
+  if (raw.length > 0) {
+    return raw;
+  }
+  return "http://192.168.55.113:9001";
+}
+
 function readUiHtml(): string {
   const uiPath = path.resolve("src", "ui", "index.html");
   return fs
     .readFileSync(uiPath, "utf-8")
     .replaceAll("{{uiWsUrl}}", resolveUiWebsocketUrl())
     .replaceAll("{{historyDays}}", resolveUiHistoryDays())
-    .replaceAll("{{showSendNoCacheButton}}", resolveShowSendNoCacheButton());
+    .replaceAll("{{showSendNoCacheButton}}", resolveShowSendNoCacheButton())
+    .replaceAll("{{s3BrowserBaseUrl}}", resolveS3BrowserBaseUrl());
 }

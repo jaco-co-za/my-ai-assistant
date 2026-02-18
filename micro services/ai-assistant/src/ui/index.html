@@ -817,6 +817,7 @@
           const wsUrl = "{{uiWsUrl}}";
           const historyDaysEnv = Number("{{historyDays}}");
           const showSendNoCacheButton = "{{showSendNoCacheButton}}" === "true";
+          const s3BrowserBaseUrlEnv = "{{s3BrowserBaseUrl}}";
           const form = document.getElementById("sendForm");
           const textarea = document.getElementById("message");
           const button = document.getElementById("sendButton");
@@ -1370,6 +1371,9 @@
                 .filter(function (item) { return item.length > 0; });
               const bodyText = typeof entry.body_text === "string" ? entry.body_text : "";
               const bodyHtml = typeof entry.body_html === "string" ? entry.body_html : "";
+              const aiSummary =
+                (typeof entry.ai_summary === "string" ? entry.ai_summary.trim() : "") ||
+                (typeof entry.summary === "string" ? entry.summary.trim() : "");
               normalized.push({
                 id: id,
                 from: typeof entry.from_raw === "string" ? entry.from_raw : "",
@@ -1382,6 +1386,7 @@
                 viewerHtml: bodyHtml,
                 attachments: attachmentNames,
                 attachmentIds: attachmentIds,
+                summary: aiSummary || "",
                 detailsLoaded: true,
               });
             }
@@ -1419,6 +1424,9 @@
                 }
                 if ((!target.attachmentIds || target.attachmentIds.length === 0) && Array.isArray(row.attachmentIds) && row.attachmentIds.length > 0) {
                   target.attachmentIds = row.attachmentIds.slice();
+                }
+                if ((!target.summary || !String(target.summary).trim()) && typeof row.summary === "string" && row.summary.trim()) {
+                  target.summary = row.summary.trim();
                 }
                 target.detailsLoaded = true;
               }
@@ -1663,6 +1671,52 @@
               }
               URL.revokeObjectURL(url);
             }, 120000);
+            return true;
+          }
+
+          function sanitizeAttachmentFilename(value) {
+            const raw = typeof value === "string" ? value.trim() : "";
+            if (!raw) {
+              return "attachment";
+            }
+            return raw.replace(/[^a-zA-Z0-9._-]/g, "_");
+          }
+
+          function normalizeS3BrowserBaseUrl(raw) {
+            const trimmed = typeof raw === "string" ? raw.trim() : "";
+            if (!trimmed) {
+              return "";
+            }
+            return trimmed.replace(/\/+$/, "");
+          }
+
+          function buildS3BrowserFileUrl(emailId, attachmentId, filename) {
+            const base = normalizeS3BrowserBaseUrl(s3BrowserBaseUrlEnv);
+            const normalizedEmailId = String(emailId || "").trim();
+            const normalizedAttachmentId = String(attachmentId || "").trim();
+            if (!base || !normalizedEmailId || !normalizedAttachmentId) {
+              return "";
+            }
+            const safeName = sanitizeAttachmentFilename(filename);
+            const objectKey = "email-attachments/" + normalizedEmailId + "/" + normalizedAttachmentId + "_" + safeName;
+            const encodedKey = encodeURIComponent(objectKey);
+            if (/\/browser\/files$/i.test(base)) {
+              return base + "/" + encodedKey;
+            }
+            return base + "/browser/files/" + encodedKey;
+          }
+
+          function openS3BrowserAttachment(emailId, attachmentId, filename) {
+            const targetUrl = buildS3BrowserFileUrl(emailId, attachmentId, filename);
+            if (!targetUrl) {
+              pushEvent("email-viewer", "s3 browser URL is not configured");
+              return false;
+            }
+            const opened = window.open(targetUrl, "_blank", "noopener,noreferrer");
+            if (!opened) {
+              pushEvent("email-viewer", "popup blocked while opening attachment");
+              return false;
+            }
             return true;
           }
 
@@ -2157,10 +2211,9 @@
                 tag.className = "attachment-id-tag";
                 tag.textContent = "ID: " + id;
                 tag.addEventListener("click", function () {
-                  requestEmailViewerAttachmentDownload("display attachment " + id, {
-                    preferredFilename: name,
-                    attachmentId: id,
-                  });
+                  if (openS3BrowserAttachment(card.id, id, name)) {
+                    pushEvent("email-viewer", "opened attachment in s3 browser");
+                  }
                 });
                 action.appendChild(tag);
               } else if (card.attachmentCommand) {

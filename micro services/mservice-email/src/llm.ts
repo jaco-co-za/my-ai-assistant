@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import sqlite3 from 'sqlite3';
 import { promisify } from 'node:util';
 import PDFParser from 'pdf2json';
+import { readAttachmentFile } from './attachmentStorage.js';
 
 type DbAll = (sql: string, ...params: unknown[]) => Promise<any[]>;
 type DbGet = (sql: string, ...params: unknown[]) => Promise<any>;
@@ -139,6 +140,8 @@ type LlmResponse = {
     body_html: string;
     attachments: string;
     attachment_ids: string;
+    ai_summary: string;
+    summary: string;
   }>;
   attachments?: Array<{
     attachment_id: number;
@@ -235,7 +238,7 @@ const EMAIL_DISABLE_FOLLOW_UP_QUESTIONS = parseBooleanLike(
   process.env.EMAIL_DISABLE_FOLLOW_UP_QUESTIONS ?? 'true',
 );
 const MAIL_SYNC_LLM_TIMEOUT_MS = Number.parseInt(process.env.MAIL_SYNC_LLM_TIMEOUT_MS || '8000', 10);
-const ASSISTANT_TIMEOUT_MS = Number.parseInt(process.env.ASSISTANT_TIMEOUT_MS || '180000', 10);
+const ASSISTANT_TIMEOUT_MS = Number.parseInt(process.env.ASSISTANT_TIMEOUT_MS || '300000', 10);
 const MAX_UI_ACTIONS = 12;
 
 function isWhatsappChannel(sourceChannel?: string): boolean {
@@ -1890,6 +1893,23 @@ function normalizeWhitespace(value: string): string {
   return value.replace(/\r/g, '').replace(/[ \t]+\n/g, '\n').trim();
 }
 
+function isInvalidSummaryText(value: string): boolean {
+  const text = String(value || '').trim().toLowerCase();
+  if (!text) {
+    return true;
+  }
+  return (
+    text.includes('email service is unavailable') ||
+    text.includes('endpoint unreachable') ||
+    text.includes('operation was aborted') ||
+    text.includes('timed out') ||
+    text.includes('timeout') ||
+    text.includes('fetch failed') ||
+    text.includes('connection refused') ||
+    text.includes('service unavailable')
+  );
+}
+
 function formatReceivedAtHuman(value: unknown): string {
   if (value === null || value === undefined) {
     return '(unknown date)';
@@ -2521,7 +2541,7 @@ function attachmentIsPdf(attachment: AttachmentCandidate): boolean {
 }
 
 async function loadAttachmentBufferFromStoragePath(storagePath: string): Promise<Buffer> {
-  const raw = await fs.promises.readFile(storagePath);
+  const raw = await readAttachmentFile(storagePath, process.env.ATTACHMENTS_DIR || './attachments');
   try {
     const parsed = JSON.parse(raw.toString('utf-8')) as { content_base64?: unknown };
     if (typeof parsed.content_base64 === 'string' && parsed.content_base64.length > 0) {
@@ -2777,10 +2797,6 @@ async function loadOrExtractAttachmentText(
   if (!attachment.storage_path) {
     throw new Error('Attachment file path is missing.');
   }
-  if (!fs.existsSync(attachment.storage_path)) {
-    throw new Error(`Attachment file not found at ${attachment.storage_path}`);
-  }
-
   const pdfBuffer = await loadAttachmentBufferFromStoragePath(attachment.storage_path);
   const extracted = await extractPdfTextFromBuffer(pdfBuffer);
   const finalText = normalizeWhitespace(extracted);
@@ -2872,9 +2888,6 @@ async function loadAttachmentDeliveryPayload(attachment: AttachmentCandidate): P
 }> {
   if (!attachment.storage_path) {
     throw new Error('Attachment file path is missing.');
-  }
-  if (!fs.existsSync(attachment.storage_path)) {
-    throw new Error(`Attachment file not found at ${attachment.storage_path}`);
   }
   const buffer = await loadAttachmentBufferFromStoragePath(attachment.storage_path);
   return {
@@ -3238,6 +3251,8 @@ async function buildEmailViewerRows(dbAll: DbAll, rows: any[]): Promise<Array<{
   body_html: string;
   attachments: string;
   attachment_ids: string;
+  ai_summary: string;
+  summary: string;
 }>> {
   if (!Array.isArray(rows) || rows.length === 0) {
     return [];
@@ -3262,6 +3277,7 @@ async function buildEmailViewerRows(dbAll: DbAll, rows: any[]): Promise<Array<{
             email_messages.received_at AS received_at,
             email_messages.text_body AS text_body,
             email_messages.html_body AS body_html,
+            email_llm_summaries.summary AS ai_summary,
             folders.name AS folder_name,
             folders.path AS folder_path,
             (SELECT GROUP_CONCAT(email_attachments.filename, ', ')
@@ -3272,6 +3288,7 @@ async function buildEmailViewerRows(dbAll: DbAll, rows: any[]): Promise<Array<{
              WHERE email_attachments.email_id = email_messages.id) AS attachment_ids
      FROM email_messages
      INNER JOIN folders ON folders.id = email_messages.folder_id
+     LEFT JOIN email_llm_summaries ON email_llm_summaries.email_id = email_messages.id
      WHERE email_messages.id IN (${placeholders});`,
     ...ids,
   );
@@ -3295,6 +3312,8 @@ async function buildEmailViewerRows(dbAll: DbAll, rows: any[]): Promise<Array<{
     body_html: string;
     attachments: string;
     attachment_ids: string;
+    ai_summary: string;
+    summary: string;
   }> = [];
   for (const id of ids) {
     const row = byId.get(id);
@@ -3315,6 +3334,10 @@ async function buildEmailViewerRows(dbAll: DbAll, rows: any[]): Promise<Array<{
       body_html: typeof row.body_html === 'string' ? row.body_html : '',
       attachments: typeof row.attachments === 'string' ? row.attachments : '',
       attachment_ids: typeof row.attachment_ids === 'string' ? row.attachment_ids : '',
+      ai_summary:
+        typeof row.ai_summary === 'string' && !isInvalidSummaryText(row.ai_summary) ? row.ai_summary : '',
+      summary:
+        typeof row.ai_summary === 'string' && !isInvalidSummaryText(row.ai_summary) ? row.ai_summary : '',
     });
   }
   return result;
@@ -3539,7 +3562,8 @@ async function sendToAssistant(
   // eslint-disable-next-line no-console
   console.log('Assistant auth header ->', authHeaderInfo);
   const controller = new AbortController();
-  const timeoutMs = Number.isFinite(ASSISTANT_TIMEOUT_MS) && ASSISTANT_TIMEOUT_MS > 0 ? ASSISTANT_TIMEOUT_MS : 90000;
+  const timeoutMs =
+    Number.isFinite(ASSISTANT_TIMEOUT_MS) && ASSISTANT_TIMEOUT_MS > 0 ? ASSISTANT_TIMEOUT_MS : 300000;
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   let response: Response;
   try {
@@ -3875,6 +3899,9 @@ export function createLlmHandler({
           ? normalizeWhitespace(String(row.text_body))
           : '';
       let summaryText = await getCachedEmailSummary(dbGet, emailId);
+      if (summaryText && isInvalidSummaryText(summaryText)) {
+        summaryText = '';
+      }
       const wantsSummary = isSummaryMailRequest(prompt);
       if (!summaryText || wantsSummary) {
         const summaryPrompt = buildEmailReadSummaryPrompt({
@@ -3906,7 +3933,7 @@ export function createLlmHandler({
           parsedSummary && typeof parsedSummary.ai_summary === 'string'
             ? parsedSummary.ai_summary.trim()
             : '';
-        if (generatedSummary) {
+        if (generatedSummary && !isInvalidSummaryText(generatedSummary)) {
           summaryText = generatedSummary;
           await saveEmailSummaryCache(dbRun, emailId, generatedSummary, 'qwen2.5-coder:14b', summaryRaw || '');
         } else if (!summaryText) {

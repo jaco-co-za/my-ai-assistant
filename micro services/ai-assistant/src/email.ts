@@ -7,7 +7,7 @@ const DEFAULT_EMAIL_URL = "http://192.168.55.73:3222/llm-query";
 const DEFAULT_WHATSAPP_MESSAGE_URL = "http://localhost:8085/message";
 const EMAIL_TIMEOUT_MS = Number(process.env.EMAIL_TIMEOUT_MS ?? "") > 0
   ? Number(process.env.EMAIL_TIMEOUT_MS)
-  : 180_000;
+  : 300_000;
 const CONFIRM_TTL_MS = Number(process.env.CONFIRM_TTL_SEC ?? "") > 0
   ? Number(process.env.CONFIRM_TTL_SEC) * 1000
   : 120_000;
@@ -108,6 +108,8 @@ type ParsedEmailViewerRow = {
   body_html: string;
   attachments: string;
   attachment_ids: string;
+  ai_summary: string;
+  summary: string;
 };
 
 type ParsedUiAction = {
@@ -315,6 +317,8 @@ function parseEmailViewerRowsPayload(parsed: ParsedEmailResponse): ParsedEmailVi
         body_html: typeof row.body_html === "string" ? row.body_html : "",
         attachments: typeof row.attachments === "string" ? row.attachments : "",
         attachment_ids: typeof row.attachment_ids === "string" ? row.attachment_ids : "",
+        ai_summary: typeof row.ai_summary === "string" ? row.ai_summary : "",
+        summary: typeof row.summary === "string" ? row.summary : "",
       };
     })
     .filter((entry): entry is ParsedEmailViewerRow => entry !== null);

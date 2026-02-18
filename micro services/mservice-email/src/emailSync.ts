@@ -1,9 +1,8 @@
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import { chunkUids, formatAddressList, formatHeaders, sleep } from './helpers.js';
 import PDFParser from 'pdf2json';
+import { deleteAttachmentObject, storeAttachmentBinary } from './attachmentStorage.js';
 
 type DbGet = (sql: string, ...params: unknown[]) => Promise<any>;
 type DbRun = (sql: string, ...params: unknown[]) => Promise<void>;
@@ -40,7 +39,7 @@ export function createEmailSync({
   const PDF_DEFAULT_PASSWORD = process.env.PDF_DEFAULT_PASSWORD || '';
   const SUMMARY_MODEL = process.env.EMAIL_SUMMARY_MODEL || process.env.ASSISTANT_MODEL || 'qwen2.5:14b';
   const SUMMARY_TIMEOUT_MS = Number.parseInt(
-    process.env.EMAIL_SUMMARY_TIMEOUT_MS || process.env.EMAIL_ASSISTANT_TIMEOUT_MS || '60000',
+    process.env.EMAIL_SUMMARY_TIMEOUT_MS || process.env.EMAIL_ASSISTANT_TIMEOUT_MS || '300000',
     10,
   );
   const IMAP_OPERATION_TIMEOUT_MS = Number.parseInt(
@@ -274,6 +273,23 @@ export function createEmailSync({
       .trim();
   }
 
+  function isInvalidSummaryText(value: string): boolean {
+    const text = String(value || '').trim().toLowerCase();
+    if (!text) {
+      return true;
+    }
+    return (
+      text.includes('email service is unavailable') ||
+      text.includes('endpoint unreachable') ||
+      text.includes('operation was aborted') ||
+      text.includes('timed out') ||
+      text.includes('timeout') ||
+      text.includes('fetch failed') ||
+      text.includes('connection refused') ||
+      text.includes('service unavailable')
+    );
+  }
+
   function parseAssistantSummary(raw: string): string | null {
     try {
       const outer = JSON.parse(raw) as any;
@@ -293,7 +309,10 @@ export function createEmailSync({
       }
       const parsed = JSON.parse(content) as { ai_summary?: unknown };
       const summary = cleanSummaryText(parsed?.ai_summary);
-      return summary || null;
+      if (!summary || isInvalidSummaryText(summary)) {
+        return null;
+      }
+      return summary;
     } catch {
       return null;
     }
@@ -557,22 +576,15 @@ export function createEmailSync({
   }
 
   async function writeAttachmentFile(emailId: number, attachment: any, index: number) {
-    const dir = attachmentsDir || './attachments';
-    await mkdir(dir, { recursive: true });
     const filename = safeFilename(attachment.filename || `attachment_${index}`);
-    const filePath = join(dir, `${emailId}_${index}_${filename}.json`);
-    const payload = {
-      email_id: emailId,
-      filename: attachment.filename || null,
-      content_type: attachment.contentType || null,
-      disposition: attachment.contentDisposition || null,
-      content_id: attachment.contentId || null,
-      checksum: attachment.checksum || null,
-      size: attachment.size || null,
-      content_base64: attachment.content ? attachment.content.toString('base64') : null,
-    };
-    await writeFile(filePath, JSON.stringify(payload));
-    return filePath;
+    return await storeAttachmentBinary({
+      emailId,
+      index,
+      filename,
+      contentType: attachment.contentType || null,
+      content: Buffer.isBuffer(attachment.content) ? attachment.content : Buffer.alloc(0),
+      localDir: attachmentsDir,
+    });
   }
 
   async function deleteAttachmentFiles(emailId: number) {
@@ -582,7 +594,7 @@ export function createEmailSync({
     );
     for (const row of rows) {
       if (row?.storage_path) {
-        await rm(row.storage_path, { force: true }).catch(() => {});
+        await deleteAttachmentObject(String(row.storage_path), attachmentsDir).catch(() => {});
       }
     }
   }
@@ -594,7 +606,7 @@ export function createEmailSync({
     );
     for (const row of rows) {
       if (row?.storage_path) {
-        await rm(row.storage_path, { force: true }).catch(() => {});
+        await deleteAttachmentObject(String(row.storage_path), attachmentsDir).catch(() => {});
       }
     }
   }

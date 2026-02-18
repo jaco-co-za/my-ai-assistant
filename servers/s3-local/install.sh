@@ -4,6 +4,7 @@ set -euo pipefail
 IMAGE="${IMAGE:-quay.io/minio/minio:latest}"
 MC_IMAGE="${MC_IMAGE:-quay.io/minio/mc:latest}"
 CONTAINER_NAME="${CONTAINER_NAME:-s3-local}"
+HOST_BIND_IP="${HOST_BIND_IP:-192.168.55.113}"
 APP_PORT="${APP_PORT:-9000}"
 CONSOLE_PORT="${CONSOLE_PORT:-9001}"
 DATA_DIR="${DATA_DIR:-$PWD/data}"
@@ -19,8 +20,8 @@ mkdir -p "$DATA_DIR"
 
 if [[ ! -f "$ENV_FILE" ]]; then
   cat > "$ENV_FILE" <<EOF
-MINIO_ROOT_USER=minioadmin
-MINIO_ROOT_PASSWORD=minioadmin
+MINIO_ROOT_USER=aiassist
+MINIO_ROOT_PASSWORD=MASEHARRE@123
 MINIO_DEFAULT_BUCKET=$DEFAULT_BUCKET
 EOF
   echo "==> Created $ENV_FILE"
@@ -50,8 +51,8 @@ docker run -d \
   --name "$CONTAINER_NAME" \
   --restart unless-stopped \
   --env-file "$ENV_FILE" \
-  -p "$APP_PORT:9000" \
-  -p "$CONSOLE_PORT:9001" \
+  -p "$HOST_BIND_IP:$APP_PORT:9000" \
+  -p "$HOST_BIND_IP:$CONSOLE_PORT:9001" \
   -v "$DATA_DIR:/data" \
   "$IMAGE" server /data --console-address ":9001" >/dev/null
 
@@ -73,11 +74,11 @@ echo "==> Ensuring bucket '$MINIO_DEFAULT_BUCKET' exists..."
 docker run --rm \
   --network "container:${CONTAINER_NAME}" \
   -e MC_HOST_local="http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@127.0.0.1:9000" \
-  "$MC_IMAGE" sh -c "mc mb --ignore-existing local/${MINIO_DEFAULT_BUCKET}" >/dev/null
+  "$MC_IMAGE" mb --ignore-existing "local/${MINIO_DEFAULT_BUCKET}" >/dev/null
 
 echo "==> S3 server is ready"
-echo "API:     http://localhost:${APP_PORT}"
-echo "Console: http://localhost:${CONSOLE_PORT}"
+echo "API:     http://${HOST_BIND_IP}:${APP_PORT}"
+echo "Console: http://${HOST_BIND_IP}:${CONSOLE_PORT}"
 echo "Bucket:  ${MINIO_DEFAULT_BUCKET}"
 
 docker ps --filter "name=$CONTAINER_NAME"

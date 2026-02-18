@@ -13,8 +13,10 @@ chmod +x install.sh
 
 ## Endpoints
 
-- S3 API: `http://localhost:9000`
-- MinIO Console: `http://localhost:9001`
+- S3 API: `http://192.168.55.113:9000`
+- MinIO Console: `http://192.168.55.113:9001`
+
+Set `HOST_BIND_IP` before running `install.sh` if your host IP changes.
 
 ## Credentials
 
