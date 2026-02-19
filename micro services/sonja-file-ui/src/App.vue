@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref } from "vue";
 import * as pdfjsLib from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import loadingGraphic from "./robotsearching.png";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
@@ -13,10 +14,12 @@ const error = ref("");
 const files = ref([]);
 const fullscreenFile = ref(null);
 const sharing = ref(false);
+const hasSearched = ref(false);
 
 const promptPrefix = (import.meta.env.VITE_SONJA_PROMPT_PREFIX || "sonja file").trim();
 
 const hasResults = computed(() => files.value.length > 0);
+const showReplyText = computed(() => hasSearched.value && !loading.value && (!hasResults.value || Boolean(error.value)));
 function isImageType(contentType = "", filename = "") {
   const loweredType = String(contentType).toLowerCase();
   const loweredName = String(filename).toLowerCase();
@@ -85,6 +88,7 @@ async function queryFiles() {
   effectivePrompt.value = toPrefixedPrompt(trimmedPrompt);
 
   try {
+    hasSearched.value = true;
     const response = await fetch("/api/file/llm-query", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -193,6 +197,18 @@ function onKeyDown(event) {
   }
 }
 
+function onPromptKeyDown(event) {
+  if (loading.value) {
+    return;
+  }
+  const isEnter = event.key === "Enter";
+  const withModifier = event.ctrlKey || event.metaKey;
+  if (isEnter && withModifier) {
+    event.preventDefault();
+    void queryFiles();
+  }
+}
+
 window.addEventListener("keydown", onKeyDown);
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onKeyDown);
@@ -203,21 +219,27 @@ onBeforeUnmount(() => {
   <main class="page">
     <section class="panel">
       <h1>Sonja Files</h1>
-      <p class="hint">File retrieval only. Prompt is auto-prefixed with <code>{{ promptPrefix }}</code>.</p>
+      <p class="hint">File retrieval only.</p>
       <div class="prompt-row">
         <textarea
           v-model="prompt"
           rows="3"
-          placeholder="Example: show latest invoices from this month"
           :disabled="loading"
+          @keydown="onPromptKeyDown"
         />
         <button type="button" @click="queryFiles" :disabled="loading">
           {{ loading ? "Searching..." : "Search Files" }}
         </button>
       </div>
-      <div class="effective" v-if="effectivePrompt">Sent: {{ effectivePrompt }}</div>
-      <pre class="reply">{{ reply || "Reply will appear here." }}</pre>
+      <pre class="reply" v-if="showReplyText">{{ reply || "No matching files found." }}</pre>
       <div class="error" v-if="error">{{ error }}</div>
+    </section>
+
+    <section class="loading-panel" v-if="loading">
+      <div class="loading-art">
+        <img :src="loadingGraphic" alt="Searching files" />
+      </div>
+      <div class="loading-text">Searching files...</div>
     </section>
 
     <section class="results" v-if="hasResults">

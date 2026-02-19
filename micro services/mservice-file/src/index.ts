@@ -50,10 +50,18 @@ const IMAGE_SUMMARY_MODEL = (process.env.IMAGE_SUMMARY_MODEL || 'qwen2.5vl:3b').
 const IMAGE_SUMMARY_FALLBACK_MODEL = (process.env.IMAGE_SUMMARY_FALLBACK_MODEL || 'qwen2.5vl:7b').trim();
 const FILE_SQL_MODEL = (process.env.FILE_SQL_MODEL || 'qwen2.5-coder:14b').trim();
 const FILE_SQL_MAX_ROWS = Number.parseInt(process.env.FILE_SQL_MAX_ROWS || '50', 10);
+const SONJA_REFINEMENT_MAX_ITERATIONS = Number.parseInt(process.env.SONJA_REFINEMENT_MAX_ITERATIONS || '3', 10);
+const SONJA_REFINEMENT_CONFIDENCE_THRESHOLD = Number.parseInt(process.env.SONJA_REFINEMENT_CONFIDENCE_THRESHOLD || '80', 10);
+const SONJA_REFINEMENT_REVIEW_CHARS = Number.parseInt(process.env.SONJA_REFINEMENT_REVIEW_CHARS || '12000', 10);
+const SONJA_REFINEMENT_MAX_REVIEW_CHUNKS = Number.parseInt(process.env.SONJA_REFINEMENT_MAX_REVIEW_CHUNKS || '12', 10);
+const SONJA_REFINEMENT_MAX_ROWS = Number.parseInt(process.env.SONJA_REFINEMENT_MAX_ROWS || '120', 10);
 const ASSISTANT_TIMEOUT_MS = Number.parseInt(process.env.ASSISTANT_TIMEOUT_MS || '120000', 10);
 const FILE_EXTRACTION_TIMEOUT_MS = Number.parseInt(process.env.FILE_EXTRACTION_TIMEOUT_MS || '120000', 10);
 const S3_OPERATION_TIMEOUT_MS = Number.parseInt(process.env.S3_OPERATION_TIMEOUT_MS || '60000', 10);
 const FILE_SUMMARY_TEXT_LIMIT = Number.parseInt(process.env.FILE_SUMMARY_TEXT_LIMIT || '12000', 10);
+const FILE_SUMMARY_CHUNK_CHARS = Number.parseInt(process.env.FILE_SUMMARY_CHUNK_CHARS || '4000', 10);
+const FILE_SUMMARY_CHUNK_OVERLAP_CHARS = Number.parseInt(process.env.FILE_SUMMARY_CHUNK_OVERLAP_CHARS || '400', 10);
+const FILE_SUMMARY_MAX_CHUNKS = Number.parseInt(process.env.FILE_SUMMARY_MAX_CHUNKS || '24', 10);
 const WHATSAPP_MESSAGE_URL = (process.env.WHATSAPP_MESSAGE_URL || '').trim();
 const WHATSAPP_MESSAGE_AUTH = (process.env.WHATSAPP_MESSAGE_AUTH || '').trim();
 
@@ -96,6 +104,14 @@ type FileSqlPlan = {
   sql: string;
 };
 
+type SonjaReviewResult = {
+  confidence: number;
+  satisfied: boolean;
+  refinedPrompt: string;
+  matchedIds: number[];
+  reason: string;
+};
+
 type DateConstraint = {
   clause: string;
   params: string[];
@@ -127,6 +143,24 @@ const BUSINESS_KEYWORDS = [
   'payslip',
   'cv',
   'resume',
+  'school',
+  'grade',
+  'class',
+  'lesson',
+  'homework',
+  'assignment',
+  'worksheet',
+  'exam',
+  'test',
+  'subject',
+  'student',
+  'teacher',
+  'math',
+  'maths',
+  'afrikaans',
+  'english',
+  'science',
+  'history',
 ];
 
 const PERSONAL_KEYWORDS = [
@@ -299,6 +333,10 @@ function inferContentScope(args: {
   const businessScore = keywordScore(combinedText, BUSINESS_KEYWORDS);
   const personalScore = keywordScore(combinedText, PERSONAL_KEYWORDS);
   const isImage = isImageAttachment(contentType, filename);
+  const isJpegLike =
+    String(contentType || '').toLowerCase().includes('image/jpeg') ||
+    String(filename || '').toLowerCase().endsWith('.jpg') ||
+    String(filename || '').toLowerCase().endsWith('.jpeg');
 
   if (businessScore > personalScore) {
     return 'business';
@@ -307,8 +345,8 @@ function inferContentScope(args: {
     return 'personal';
   }
 
-  // Default image uploads to personal unless business intent is explicit.
-  if (isImage) {
+  // Only JPG/JPEG images default to personal when no stronger business signal exists.
+  if (isImage && isJpegLike) {
     return businessScore > 0 ? 'business' : 'personal';
   }
   return 'business';
@@ -360,6 +398,50 @@ function trimForSummary(value: string, maxChars: number): string {
     return value;
   }
   return `${value.slice(0, Math.max(0, maxChars - 3))}...`;
+}
+
+function toSafeChunkSize(value: number): number {
+  if (!Number.isFinite(value) || value < 500) {
+    return 4000;
+  }
+  return Math.floor(value);
+}
+
+function toSafeChunkOverlap(value: number, chunkSize: number): number {
+  const overlap = Number.isFinite(value) ? Math.floor(value) : 0;
+  if (overlap < 0) {
+    return 0;
+  }
+  return Math.min(overlap, Math.max(0, chunkSize - 200));
+}
+
+function toSafeMaxChunks(value: number): number {
+  if (!Number.isFinite(value) || value < 1) {
+    return 24;
+  }
+  return Math.floor(value);
+}
+
+function splitTextIntoChunks(text: string, chunkSize: number, overlap: number, maxChunks: number): string[] {
+  const normalized = String(text || '').trim();
+  if (!normalized) {
+    return [];
+  }
+  const chunks: string[] = [];
+  let cursor = 0;
+  const step = Math.max(1, chunkSize - overlap);
+  while (cursor < normalized.length && chunks.length < maxChunks) {
+    const end = Math.min(normalized.length, cursor + chunkSize);
+    const part = normalized.slice(cursor, end).trim();
+    if (part.length > 0) {
+      chunks.push(part);
+    }
+    if (end >= normalized.length) {
+      break;
+    }
+    cursor += step;
+  }
+  return chunks;
 }
 
 function summaryIndicatesNoReadableText(summary: string): boolean {
@@ -477,7 +559,7 @@ async function extractWordTextFromBuffer(buffer: Buffer): Promise<string> {
 
 async function sendSummaryRequestToAssistant(
   payload: Record<string, unknown>,
-  options?: { model?: string; imageBase64?: string },
+  options?: { model?: string; imageBase64?: string; extraGuidance?: string[] },
 ): Promise<string | null> {
   if (!ASSISTANT_URL) {
     return null;
@@ -490,10 +572,13 @@ async function sendSummaryRequestToAssistant(
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const userLines = [
-      'Create a concise summary for the uploaded file.',
+      'Create a detailed summary for the uploaded file.',
       'Use extracted text when available, else use filename/content type/caption.',
       'For images, infer key visible details directly from the image.',
+      'Include important names, numbers, dates, places, topics, and key phrases to improve later search recall.',
+      'Prefer completeness over brevity.',
       'Do not include labels and return summary text only.',
+      ...(Array.isArray(options?.extraGuidance) ? options.extraGuidance : []),
       `Payload: ${JSON.stringify(payload)}`,
     ];
     const userMessage: Record<string, unknown> = {
@@ -544,6 +629,267 @@ async function sendSummaryRequestToAssistant(
   }
 }
 
+async function requestParsedSummaryFromAssistant(
+  payload: Record<string, unknown>,
+  options?: { model?: string; imageBase64?: string; extraGuidance?: string[] },
+): Promise<{ raw: string; parsedSummary: string }> {
+  const raw = await sendSummaryRequestToAssistant(payload, options);
+  if (!raw) {
+    throw new Error('Summary service returned an empty response');
+  }
+  const parsedSummary = parseAssistantSummary(raw);
+  if (!parsedSummary) {
+    throw new Error('Summary service response could not be parsed');
+  }
+  return { raw, parsedSummary };
+}
+
+async function summarizeExtractedTextInChunks(args: {
+  basePayload: Record<string, unknown>;
+  extractedText: string;
+  model: string;
+}): Promise<{ raw: string; parsedSummary: string; chunkCount: number }> {
+  const chunkSize = toSafeChunkSize(FILE_SUMMARY_CHUNK_CHARS);
+  const chunkOverlap = toSafeChunkOverlap(FILE_SUMMARY_CHUNK_OVERLAP_CHARS, chunkSize);
+  const maxChunks = toSafeMaxChunks(FILE_SUMMARY_MAX_CHUNKS);
+  const chunks = splitTextIntoChunks(args.extractedText, chunkSize, chunkOverlap, maxChunks);
+  if (chunks.length <= 1) {
+    const single = await requestParsedSummaryFromAssistant(
+      { ...args.basePayload, extracted_text: trimForSummary(args.extractedText, FILE_SUMMARY_TEXT_LIMIT) },
+      { model: args.model },
+    );
+    return { ...single, chunkCount: 1 };
+  }
+
+  const chunkSummaries: string[] = [];
+  for (let i = 0; i < chunks.length; i += 1) {
+    const chunkPayload = {
+      ...args.basePayload,
+      extracted_text: chunks[i],
+      summary_strategy: 'chunk-map',
+      chunk_index: i + 1,
+      chunk_total: chunks.length,
+    };
+    const chunkResult = await requestParsedSummaryFromAssistant(chunkPayload, {
+      model: args.model,
+      extraGuidance: [
+        `This is chunk ${i + 1} of ${chunks.length}.`,
+        'Summarize only this chunk and keep details factual.',
+      ],
+    });
+    chunkSummaries.push(chunkResult.parsedSummary);
+  }
+
+  const mergedChunkText = chunkSummaries.map((value, index) => `Chunk ${index + 1}: ${value}`).join('\n');
+  const reducePayload = {
+    ...args.basePayload,
+    extracted_text: trimForSummary(mergedChunkText, FILE_SUMMARY_TEXT_LIMIT),
+    summary_strategy: 'chunk-reduce',
+    chunk_total: chunks.length,
+  };
+  const reduceResult = await requestParsedSummaryFromAssistant(reducePayload, {
+    model: args.model,
+    extraGuidance: [
+      'Combine the chunk summaries into one concise final summary.',
+      'Preserve key entities, numbers, and document intent.',
+    ],
+  });
+  return { ...reduceResult, chunkCount: chunks.length };
+}
+
+function parseAssistantJsonContent(raw: string): Record<string, unknown> | null {
+  try {
+    const outer = JSON.parse(raw) as any;
+    let content = '';
+    if (typeof outer?.msg === 'string') {
+      const msgBody = JSON.parse(outer.msg);
+      if (typeof msgBody?.message?.content === 'string') {
+        content = msgBody.message.content;
+      }
+    } else if (typeof outer?.message?.content === 'string') {
+      content = outer.message.content;
+    } else if (typeof outer?.content === 'string') {
+      content = outer.content;
+    } else if (outer && typeof outer === 'object') {
+      return outer as Record<string, unknown>;
+    }
+    if (!content) {
+      return null;
+    }
+    return JSON.parse(content) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeConfidence(value: unknown): number {
+  const raw = Number(value);
+  if (!Number.isFinite(raw)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(100, Math.round(raw)));
+}
+
+function buildSonjaReviewChunks(rows: any[]): string[] {
+  const maxChars = Math.max(2000, SONJA_REFINEMENT_REVIEW_CHARS);
+  const maxChunks = Math.max(1, SONJA_REFINEMENT_MAX_REVIEW_CHUNKS);
+  const limitedRows = rows.slice(0, Math.max(1, SONJA_REFINEMENT_MAX_ROWS));
+  const chunks: string[] = [];
+  let current = '';
+  for (const row of limitedRows) {
+    const line = JSON.stringify({
+      id: Number(row?.id || 0),
+      filename: String(row?.filename || ''),
+      summary: trimForSummary(String(row?.summary || ''), 1600),
+      caption: trimForSummary(String(row?.caption || ''), 400),
+      created_at: String(row?.created_at || ''),
+    });
+    if (!line.trim()) {
+      continue;
+    }
+    const next = current ? `${current}\n${line}` : line;
+    if (next.length > maxChars) {
+      if (current) {
+        chunks.push(current);
+      }
+      current = line;
+      if (chunks.length >= maxChunks) {
+        break;
+      }
+      continue;
+    }
+    current = next;
+  }
+  if (current && chunks.length < maxChunks) {
+    chunks.push(current);
+  }
+  return chunks.length > 0 ? chunks : [''];
+}
+
+async function sendSonjaReviewRequestToAssistant(payload: Record<string, unknown>): Promise<SonjaReviewResult | null> {
+  if (!ASSISTANT_URL) {
+    return null;
+  }
+  const authorizationHeader = ASSISTANT_AUTH ? `Bearer ${ASSISTANT_AUTH}` : '';
+  const url = ASSISTANT_URL.match(/^https?:\/\//i) ? ASSISTANT_URL : `http://${ASSISTANT_URL}`;
+  const controller = new AbortController();
+  const timeoutMs =
+    Number.isFinite(ASSISTANT_TIMEOUT_MS) && ASSISTANT_TIMEOUT_MS > 0 ? ASSISTANT_TIMEOUT_MS : 120000;
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const messagePayload = {
+      Authorization: ASSISTANT_AUTH,
+      authorization: ASSISTANT_AUTH,
+      model: FILE_SQL_MODEL,
+      messages: [
+        {
+          role: 'system',
+          content:
+            'You evaluate file-search relevance. Return ONLY valid JSON with fields: confidence (0-100 integer), satisfied (boolean), refined_prompt (string), matched_ids (number[]), reason (string).',
+        },
+        {
+          role: 'user',
+          content: [
+            'Task: compare the user request with candidate file summaries.',
+            'Rules:',
+            '- confidence is how well candidate summaries match the user request.',
+            '- satisfied=true only if confidence >= 80.',
+            '- matched_ids: only ids that clearly match the user request.',
+            '- Grade matching is strict: if user request specifies grade(s), do not match summaries with different grade references.',
+            '- For grade ranges (for example 1 to 6), treat grades inside range as matches.',
+            '- refined_prompt: improved search prompt to get closer matches if not satisfied.',
+            '- reason: one short sentence.',
+            `Payload: ${JSON.stringify(payload)}`,
+          ].join('\n'),
+        },
+      ],
+      temperature: 0.1,
+      stream: false,
+      format: 'json',
+    };
+    const requestBody = {
+      from: 'custom-prompt',
+      message: JSON.stringify(messagePayload),
+    };
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        ...(authorizationHeader ? { Authorization: authorizationHeader } : {}),
+      },
+      body: JSON.stringify(requestBody),
+      signal: controller.signal,
+    });
+    const raw = await response.text();
+    if (!response.ok) {
+      return null;
+    }
+    const parsed = parseAssistantJsonContent(raw);
+    if (!parsed) {
+      return null;
+    }
+    const matchedRaw = Array.isArray(parsed.matched_ids) ? parsed.matched_ids : [];
+    const matchedIds = matchedRaw
+      .map((item) => Number(item))
+      .filter((id) => Number.isFinite(id) && id > 0)
+      .map((id) => Math.floor(id));
+    const confidence = normalizeConfidence(parsed.confidence);
+    const satisfied = Boolean(parsed.satisfied) || confidence >= SONJA_REFINEMENT_CONFIDENCE_THRESHOLD;
+    return {
+      confidence,
+      satisfied,
+      refinedPrompt: String(parsed.refined_prompt || '').trim(),
+      matchedIds: Array.from(new Set(matchedIds)),
+      reason: String(parsed.reason || '').trim(),
+    };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function reviewSonjaRowsAgainstPrompt(args: {
+  originalPrompt: string;
+  currentPrompt: string;
+  iteration: number;
+  rows: any[];
+}): Promise<SonjaReviewResult | null> {
+  const chunks = buildSonjaReviewChunks(args.rows);
+  const collected: SonjaReviewResult[] = [];
+  for (let i = 0; i < chunks.length; i += 1) {
+    const review = await sendSonjaReviewRequestToAssistant({
+      original_prompt: args.originalPrompt,
+      current_prompt: args.currentPrompt,
+      iteration: args.iteration,
+      chunk_index: i + 1,
+      chunk_total: chunks.length,
+      candidates_ndjson: chunks[i],
+    });
+    if (review) {
+      collected.push(review);
+    }
+  }
+  if (collected.length === 0) {
+    return null;
+  }
+  const matchedIds = Array.from(new Set(collected.flatMap((item) => item.matchedIds)));
+  const confidence = Math.round(
+    collected.reduce((sum, item) => sum + normalizeConfidence(item.confidence), 0) / Math.max(1, collected.length),
+  );
+  const satisfied = confidence >= SONJA_REFINEMENT_CONFIDENCE_THRESHOLD || collected.some((item) => item.satisfied);
+  const refinedPrompt =
+    collected
+      .map((item) => item.refinedPrompt)
+      .find((value) => value && value.trim().length > 0) || '';
+  const reason =
+    collected
+      .map((item) => item.reason)
+      .find((value) => value && value.trim().length > 0) || '';
+  return { confidence, satisfied, refinedPrompt, matchedIds, reason };
+}
+
 async function sendSqlPlanRequestToAssistant(payload: Record<string, unknown>): Promise<string | null> {
   if (!ASSISTANT_URL) {
     return null;
@@ -582,6 +928,9 @@ async function sendSqlPlanRequestToAssistant(payload: Record<string, unknown>): 
             '- Never use INSERT/UPDATE/DELETE/PRAGMA/ATTACH.',
             '- Include ORDER BY id DESC by default.',
             '- content_scope values: business | personal.',
+            '- If payload.owner is sonja, use summary-based matching only. Do not use filename/caption/pdf_text/source_sender for semantic matching.',
+            '- Grade constraints are strict: when prompt includes grade references, summaries with grade references must match requested grade(s) or requested grade range.',
+            '- Subject constraints are strict: for single-subject prompts (for example "grade 3 math"), avoid broad multi-subject summaries unless user explicitly asks for mixed/all-subject content.',
             '- Do not assume source/source_sender constraints unless user explicitly asks for source, sender, or channel filtering.',
             '- Prefer summary matches first when user asks about file content/topic.',
             '- Honor date constraints from the prompt (for example: today, yesterday, last 7 days, on YYYY-MM-DD, from YYYY-MM-DD to YYYY-MM-DD).',
@@ -691,6 +1040,27 @@ function sqlHasSourceConstraint(sql: string): boolean {
   return /\bsource\s*=/.test(normalized) || /\bsource_sender\s*(=|like)\s*/.test(normalized);
 }
 
+function sqlUsesNonSummaryTextSearch(sql: string): boolean {
+  const normalized = String(sql || '').toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return (
+    /\bfilename\b/.test(normalized) ||
+    /\bcaption\b/.test(normalized) ||
+    /\bpdf_text\b/.test(normalized) ||
+    /\bsource_sender\b/.test(normalized)
+  );
+}
+
+function sqlTargetsPersonalScope(sql: string): boolean {
+  const normalized = String(sql || '').toLowerCase().replace(/\s+/g, ' ');
+  if (!normalized) {
+    return false;
+  }
+  return /\bcontent_scope\s*=\s*'personal'\b/.test(normalized) || /\bcontent_scope\s+in\s*\(\s*'personal'\s*\)/.test(normalized);
+}
+
 function extractPromptSearchTokens(prompt: string): string[] {
   const stopwords = new Set([
     'a', 'an', 'and', 'any', 'about', 'for', 'from', 'find', 'get', 'give', 'show', 'list', 'search', 'look',
@@ -703,6 +1073,162 @@ function extractPromptSearchTokens(prompt: string): string[] {
     .map((token) => token.trim())
     .filter((token) => token.length >= 3 && !stopwords.has(token));
   return Array.from(new Set(tokens)).slice(0, 5);
+}
+
+function parseGradeNumbersFromText(text: string): number[] {
+  const out = new Set<number>();
+  const normalized = String(text || '').toLowerCase();
+  if (!normalized) {
+    return [];
+  }
+
+  const rangeRegex = /\b(?:grade|grades|graad)\s*(\d{1,2})\s*(?:to|-|through|tot)\s*(\d{1,2})\b/gi;
+  let rangeMatch: RegExpExecArray | null;
+  while ((rangeMatch = rangeRegex.exec(normalized)) !== null) {
+    const left = Number(rangeMatch[1]);
+    const right = Number(rangeMatch[2]);
+    if (!Number.isFinite(left) || !Number.isFinite(right)) {
+      continue;
+    }
+    const start = Math.max(0, Math.min(left, right));
+    const end = Math.min(12, Math.max(left, right));
+    for (let i = start; i <= end; i += 1) {
+      out.add(i);
+    }
+  }
+
+  const singleRegex = /\b(?:grade|grades|graad)\s*(\d{1,2})\b/gi;
+  let singleMatch: RegExpExecArray | null;
+  while ((singleMatch = singleRegex.exec(normalized)) !== null) {
+    const value = Number(singleMatch[1]);
+    if (Number.isFinite(value) && value >= 0 && value <= 12) {
+      out.add(value);
+    }
+  }
+  return Array.from(out).sort((a, b) => a - b);
+}
+
+function applyGradeConstraintFilter(rows: any[], prompt: string): any[] {
+  const promptGrades = parseGradeNumbersFromText(prompt);
+  if (promptGrades.length === 0) {
+    return rows;
+  }
+  const allowed = new Set(promptGrades);
+  return rows.filter((row) => {
+    const summaryGrades = parseGradeNumbersFromText(String(row?.summary || ''));
+    if (summaryGrades.length === 0) {
+      return true;
+    }
+    return summaryGrades.some((grade) => allowed.has(grade));
+  });
+}
+
+type SubjectKey = 'math' | 'afrikaans' | 'english' | 'science' | 'history' | 'geography' | 'language';
+
+const SUBJECT_PATTERNS: Record<SubjectKey, RegExp[]> = {
+  math: [
+    /\bmath\b/i,
+    /\bmaths\b/i,
+    /\bmathematics\b/i,
+    /\bwiskunde\b/i,
+    /\barithmetic\b/i,
+    /\bgeometry\b/i,
+    /\bfractions?\b/i,
+    /\baddition\b/i,
+    /\bsubtraction\b/i,
+    /\bmultiplication\b/i,
+    /\bdivision\b/i,
+    /\bnumber (?:line|sequence|names?)\b/i,
+  ],
+  afrikaans: [/\bafrikaans\b/i],
+  english: [/\benglish\b/i],
+  science: [/\bscience\b/i, /\bnatuurwetenskap\b/i],
+  history: [/\bhistory\b/i, /\bgeskiedenis\b/i],
+  geography: [/\bgeography\b/i, /\baardrykskunde\b/i],
+  language: [
+    /\bword search\b/i,
+    /\bwordsearch\b/i,
+    /\bword-search\b/i,
+    /\bvocabulary\b/i,
+    /\bspelling\b/i,
+    /\bcomprehension\b/i,
+    /\breading\b/i,
+  ],
+};
+
+const LANGUAGE_HEAVY_PATTERNS = [
+  /\bword search\b/i,
+  /\bvocabulary\b/i,
+  /\bspelling\b/i,
+  /\breading comprehension\b/i,
+  /\bcomprehension\b/i,
+  /\bphonics\b/i,
+];
+
+function detectSubjects(text: string): Set<SubjectKey> {
+  const out = new Set<SubjectKey>();
+  const raw = String(text || '');
+  for (const [subject, patterns] of Object.entries(SUBJECT_PATTERNS) as Array<[SubjectKey, RegExp[]]>) {
+    if (patterns.some((pattern) => pattern.test(raw))) {
+      out.add(subject);
+    }
+  }
+  return out;
+}
+
+function promptAllowsMixedSubjects(prompt: string): boolean {
+  const text = String(prompt || '').toLowerCase();
+  return /\b(all subjects|all subject|mixed|workbook|term work|overview|full pack|complete)\b/.test(text);
+}
+
+function applySubjectConstraintFilter(rows: any[], prompt: string): any[] {
+  const promptSubjects = detectSubjects(prompt);
+  if (promptSubjects.size === 0) {
+    return rows;
+  }
+  const allowMixed = promptAllowsMixedSubjects(prompt);
+  const promptSubjectList = Array.from(promptSubjects);
+  return rows.filter((row) => {
+    const summary = String(row?.summary || '');
+    const summarySubjects = detectSubjects(summary);
+    const isMathPrompt = promptSubjects.has('math');
+    const isLanguagePrompt = promptSubjects.has('language');
+    const hasMathSignal = SUBJECT_PATTERNS.math.some((pattern) => pattern.test(summary));
+    const isLanguageHeavy = LANGUAGE_HEAVY_PATTERNS.some((pattern) => pattern.test(summary));
+    const wantsLanguage = promptSubjects.has('language') || promptSubjects.has('english') || promptSubjects.has('afrikaans');
+
+    if (isMathPrompt) {
+      if (!hasMathSignal) {
+        return false;
+      }
+      if (isLanguageHeavy && !hasMathSignal) {
+        return false;
+      }
+    } else if (isLanguagePrompt) {
+      if (!isLanguageHeavy) {
+        return false;
+      }
+      // Keep language requests focused: exclude math-only summaries.
+      if (hasMathSignal && !wantsLanguage) {
+        return false;
+      }
+    } else if (summarySubjects.size === 0) {
+      return false;
+    }
+    if (isLanguageHeavy && !wantsLanguage) {
+      return false;
+    }
+
+    const hasRequested = promptSubjectList.some((subject) => summarySubjects.has(subject));
+    if (!hasRequested) {
+      return false;
+    }
+    // For single-subject prompts, suppress broad multi-subject summaries unless user asked for mixed content.
+    if (!allowMixed && promptSubjectList.length === 1 && summarySubjects.size >= 3) {
+      return false;
+    }
+    return true;
+  });
 }
 
 function normalizeDateLiteral(value: string): string | null {
@@ -807,7 +1333,7 @@ function buildContentFallbackQuery(prompt: string, dateConstraint: DateConstrain
   }
   return {
     sql:
-      'SELECT id, bucket, s3_key, filename, content_type, size_bytes, caption, summary, summary_status, created_at ' +
+      'SELECT id, bucket, s3_key, filename, content_type, size_bytes, caption, summary, content_scope, summary_status, created_at ' +
       `FROM files WHERE (${clauses.join(' OR ')})` +
       (dateConstraint ? ` AND (${dateConstraint.clause})` : '') +
       ` ORDER BY id DESC LIMIT ${FILE_SQL_MAX_ROWS}`,
@@ -828,7 +1354,7 @@ function buildSummaryFallbackQuery(prompt: string, dateConstraint: DateConstrain
   }
   return {
     sql:
-      'SELECT id, bucket, s3_key, filename, content_type, size_bytes, caption, summary, summary_status, created_at ' +
+      'SELECT id, bucket, s3_key, filename, content_type, size_bytes, caption, summary, content_scope, summary_status, created_at ' +
       `FROM files WHERE (${clauses.join(' OR ')})` +
       (dateConstraint ? ` AND (${dateConstraint.clause})` : '') +
       ` ORDER BY id DESC LIMIT ${FILE_SQL_MAX_ROWS}`,
@@ -865,14 +1391,156 @@ async function filterRowsForOwnerSearch(args: {
     }
     scopeById.set(Math.floor(id), normalizeContentScope(row?.content_scope));
   }
-  return args.rows.filter((row) => {
-    const id = Number(row?.id);
-    if (!Number.isFinite(id) || id <= 0) {
-      return false;
+  return args.rows
+    .map((row) => {
+      const id = Number(row?.id);
+      if (!Number.isFinite(id) || id <= 0) {
+        return null;
+      }
+      const scope = scopeById.get(Math.floor(id)) || 'business';
+      if (scope === 'personal') {
+        return null;
+      }
+      return { ...row, content_scope: scope };
+    })
+    .filter((row): row is any => Boolean(row));
+}
+
+async function runFileSearchQuery(args: {
+  prompt: string;
+  owner: string;
+  dbCtx: DbContext;
+  sourceChannel: string;
+  sourceFrom: string;
+}): Promise<{ rows: any[]; effectiveSql: string; delivery: 'attach' | 'none' }> {
+  const planPayload = {
+    prompt: args.prompt,
+    owner: args.owner,
+    source_channel: args.sourceChannel || null,
+    source_from: args.sourceFrom || null,
+  };
+  const rawPlan = await sendSqlPlanRequestToAssistant(planPayload);
+  const parsedPlan = rawPlan ? parseFileSqlPlan(rawPlan) : null;
+  const isSonjaOwner = normalizeOwner(args.owner) === SONJA_OWNER;
+  const fallbackSql =
+    `SELECT id, bucket, s3_key, filename, content_type, size_bytes, caption, summary, content_scope, summary_status, created_at FROM files ORDER BY id DESC LIMIT ${FILE_SQL_MAX_ROWS}`;
+  const dateConstraint = extractDateConstraintFromPrompt(args.prompt);
+  const summaryFirstQuery = buildSummaryFallbackQuery(args.prompt, dateConstraint);
+  let rows = summaryFirstQuery ? await args.dbCtx.dbAll(summaryFirstQuery.sql, ...summaryFirstQuery.params) : [];
+  rows = await filterRowsForOwnerSearch({ owner: args.owner, rows, dbCtx: args.dbCtx });
+  rows = applyGradeConstraintFilter(rows, args.prompt);
+  if (isSonjaOwner) {
+    rows = applySubjectConstraintFilter(rows, args.prompt);
+  }
+  let effectiveSql = summaryFirstQuery?.sql || '';
+  let sql = enforceSafeFileSql(parsedPlan?.sql || fallbackSql);
+  if (sqlHasSourceConstraint(sql) && !promptMentionsSourceConstraint(args.prompt)) {
+    sql = fallbackSql;
+  }
+  if (isSonjaOwner && sqlUsesNonSummaryTextSearch(sql)) {
+    sql = summaryFirstQuery?.sql || fallbackSql;
+  }
+  if (isSonjaOwner && sqlTargetsPersonalScope(sql)) {
+    sql = summaryFirstQuery?.sql || fallbackSql;
+  }
+  if (rows.length === 0) {
+    if (dateConstraint && !sqlHasDateConstraint(sql)) {
+      sql = fallbackSql;
     }
-    const scope = scopeById.get(Math.floor(id)) || 'business';
-    return scope !== 'personal';
-  });
+    rows = await args.dbCtx.dbAll(sql);
+    rows = await filterRowsForOwnerSearch({ owner: args.owner, rows, dbCtx: args.dbCtx });
+    rows = applyGradeConstraintFilter(rows, args.prompt);
+    if (isSonjaOwner) {
+      rows = applySubjectConstraintFilter(rows, args.prompt);
+    }
+    effectiveSql = sql;
+  }
+  if ((!rows || rows.length === 0) && args.prompt) {
+    const fallbackQuery = isSonjaOwner
+      ? buildSummaryFallbackQuery(args.prompt, dateConstraint)
+      : buildContentFallbackQuery(args.prompt, dateConstraint);
+    if (fallbackQuery) {
+      let fallbackRows = await args.dbCtx.dbAll(fallbackQuery.sql, ...fallbackQuery.params);
+      fallbackRows = await filterRowsForOwnerSearch({ owner: args.owner, rows: fallbackRows, dbCtx: args.dbCtx });
+      fallbackRows = applyGradeConstraintFilter(fallbackRows, args.prompt);
+      if (isSonjaOwner) {
+        fallbackRows = applySubjectConstraintFilter(fallbackRows, args.prompt);
+      }
+      if (fallbackRows.length > 0) {
+        rows = fallbackRows;
+        effectiveSql = fallbackQuery.sql;
+      }
+    }
+  }
+  if (isSonjaOwner) {
+    effectiveSql = `${effectiveSql || fallbackSql} /* personal scope excluded for sonja */`;
+  }
+  const delivery = parsedPlan?.delivery === 'attach' || wantsFileDelivery(args.prompt) ? 'attach' : 'none';
+  return { rows, effectiveSql, delivery };
+}
+
+async function refineSonjaSearchResults(args: {
+  originalPrompt: string;
+  owner: string;
+  dbCtx: DbContext;
+  sourceChannel: string;
+  sourceFrom: string;
+  initialRows: any[];
+  initialSql: string;
+}): Promise<{ rows: any[]; effectiveSql: string; confidence: number; iterations: number }> {
+  if (normalizeOwner(args.owner) !== SONJA_OWNER) {
+    return { rows: args.initialRows, effectiveSql: args.initialSql, confidence: 0, iterations: 0 };
+  }
+  if (!ASSISTANT_URL) {
+    return { rows: args.initialRows, effectiveSql: args.initialSql, confidence: 0, iterations: 0 };
+  }
+  const maxIterations = Math.max(1, SONJA_REFINEMENT_MAX_ITERATIONS);
+  let currentPrompt = args.originalPrompt;
+  let currentRows = Array.isArray(args.initialRows) ? args.initialRows : [];
+  let currentSql = args.initialSql;
+  let finalConfidence = 0;
+  let appliedIterations = 0;
+  for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
+    if (!Array.isArray(currentRows) || currentRows.length === 0) {
+      break;
+    }
+    const review = await reviewSonjaRowsAgainstPrompt({
+      originalPrompt: args.originalPrompt,
+      currentPrompt,
+      iteration,
+      rows: currentRows,
+    });
+    if (!review) {
+      break;
+    }
+    appliedIterations = iteration;
+    finalConfidence = review.confidence;
+    if (review.matchedIds.length > 0) {
+      const matched = new Set(review.matchedIds);
+      const filtered = currentRows.filter((row) => matched.has(Number(row?.id)));
+      if (filtered.length > 0) {
+        currentRows = filtered;
+      }
+    }
+    if (review.satisfied || review.confidence >= SONJA_REFINEMENT_CONFIDENCE_THRESHOLD) {
+      break;
+    }
+    const refinedPrompt = String(review.refinedPrompt || '').trim();
+    if (!refinedPrompt || refinedPrompt.toLowerCase() === currentPrompt.toLowerCase()) {
+      break;
+    }
+    currentPrompt = refinedPrompt;
+    const nextQuery = await runFileSearchQuery({
+      prompt: currentPrompt,
+      owner: args.owner,
+      dbCtx: args.dbCtx,
+      sourceChannel: args.sourceChannel,
+      sourceFrom: args.sourceFrom,
+    });
+    currentRows = nextQuery.rows;
+    currentSql = `${nextQuery.effectiveSql} /* sonja refinement iteration=${iteration} confidence=${review.confidence} */`;
+  }
+  return { rows: currentRows, effectiveSql: currentSql, confidence: finalConfidence, iterations: appliedIterations };
 }
 
 function wantsFileDelivery(prompt: string): boolean {
@@ -1133,6 +1801,7 @@ async function runPdfSummaryPipeline(args: {
   caption: string;
   callbackUrl: string;
   callbackAuthorization: string;
+  contentScope: ContentScope;
   baseMetadata: Record<string, string>;
   content: Buffer;
 }): Promise<void> {
@@ -1142,6 +1811,7 @@ async function runPdfSummaryPipeline(args: {
   let summaryError = '';
   let summaryModel = ASSISTANT_MODEL;
   let extractor: string | null = null;
+  let resolvedContentScope: ContentScope = args.contentScope;
   let usedPdfImageFallback = false;
   try {
     const isPdf = isPdfAttachment(args.contentType, args.filename);
@@ -1197,23 +1867,24 @@ async function runPdfSummaryPipeline(args: {
         useImageInput &&
         (args.contentType || '').toLowerCase().startsWith('image/');
       const payload = buildSummaryPayload(useImageInput, usedPdfImageFallback);
-      const raw = await sendSummaryRequestToAssistant(payload, {
+      return await requestParsedSummaryFromAssistant(payload, {
         model: summaryModel,
         imageBase64: canAttachImagePayload ? args.content.toString('base64') : undefined,
       });
-      if (!raw) {
-        throw new Error('Summary service returned an empty response');
-      }
-      const parsedSummary = parseAssistantSummary(raw);
-      if (!parsedSummary) {
-        throw new Error('Summary service response could not be parsed');
-      }
-      return { raw, parsedSummary };
     };
 
     const useImageSummaryInput = isImage || usedPdfImageFallback;
     try {
-      const firstAttempt = await requestSummary(useImageSummaryInput);
+      const shouldUseChunkedSummary =
+        !useImageSummaryInput &&
+        extractedPdfText.length > Math.max(toSafeChunkSize(FILE_SUMMARY_CHUNK_CHARS), FILE_SUMMARY_TEXT_LIMIT);
+      const firstAttempt = shouldUseChunkedSummary
+        ? await summarizeExtractedTextInChunks({
+          basePayload: buildSummaryPayload(false, usedPdfImageFallback),
+          extractedText: extractedPdfText,
+          model: summaryModel,
+        })
+        : await requestSummary(useImageSummaryInput);
       summaryRawResponse = firstAttempt.raw;
       summary = firstAttempt.parsedSummary;
       const shouldRetryPdfFromSemanticNoText =
@@ -1278,9 +1949,18 @@ async function runPdfSummaryPipeline(args: {
       }
     }
 
+    resolvedContentScope = inferContentScope({
+      contentType: args.contentType,
+      filename: args.filename,
+      caption: args.caption,
+      summary,
+      extractedText: extractedPdfText,
+      requestedScope: args.contentScope,
+    });
     const metadataWithSummary: Record<string, string> = {
       ...args.baseMetadata,
       ...(metadataValue(summary, 512) ? { summary: metadataValue(summary, 512)! } : {}),
+      content_scope: resolvedContentScope,
     };
     await s3SendWithTimeout(
       new PutObjectCommand({
@@ -1298,6 +1978,7 @@ async function runPdfSummaryPipeline(args: {
            pdf_text_length = ?,
            pdf_extractor = ?,
            summary = ?,
+           content_scope = ?,
            summary_status = 'completed',
            summary_error = NULL,
            summary_model = ?,
@@ -1309,9 +1990,10 @@ async function runPdfSummaryPipeline(args: {
       extractedPdfText.length,
       extractor,
       summary,
+      resolvedContentScope,
       summaryModel,
       summaryRawResponse || null,
-      JSON.stringify({ ...args.baseMetadata, summary: safeSummarySnippet(summary, 512) }),
+      JSON.stringify({ ...args.baseMetadata, content_scope: resolvedContentScope, summary: safeSummarySnippet(summary, 512) }),
       args.fileId,
     );
     logSummaryOutcome({
@@ -1377,6 +2059,7 @@ async function runPdfSummaryPipeline(args: {
            pdf_text_length = ?,
            pdf_extractor = ?,
            summary = NULL,
+           content_scope = ?,
            summary_status = 'failed',
            summary_error = ?,
            summary_model = ?,
@@ -1387,10 +2070,11 @@ async function runPdfSummaryPipeline(args: {
       extractedPdfText || null,
       extractedPdfText.length,
       extractedPdfText ? extractor : null,
+      resolvedContentScope,
       summaryError,
       summaryModel,
       summaryRawResponse || null,
-      JSON.stringify(args.baseMetadata),
+      JSON.stringify({ ...args.baseMetadata, content_scope: resolvedContentScope }),
       args.fileId,
     );
     logSummaryOutcome({
@@ -1471,6 +2155,7 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
     const sourceMessageId =
       typeof req.body?.source_message_id === 'string' ? req.body.source_message_id.trim() : '';
     const caption = typeof req.body?.caption === 'string' ? req.body.caption : '';
+    const requestedContentScope = req.body?.content_scope;
     const callbackUrl = typeof req.body?.callback_url === 'string' ? req.body.callback_url.trim() : '';
     const callbackAuthorization =
       typeof req.body?.callback_authorization === 'string' ? req.body.callback_authorization.trim() : '';
@@ -1490,10 +2175,16 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
 
     const bytes = Buffer.from(dataBase64, 'base64');
     const contentHash = crypto.createHash('sha256').update(bytes).digest('hex');
+    const initialContentScope = inferContentScope({
+      contentType,
+      filename,
+      caption,
+      requestedScope: requestedContentScope,
+    });
     await ensureBucketExists(bucket);
     if (FILE_DEDUP_ENABLED) {
       const existing = await dbCtx.dbGet(
-        `SELECT id, bucket, s3_key, filename, content_type, size_bytes, caption, summary, summary_status, pdf_text_length
+        `SELECT id, bucket, s3_key, filename, content_type, size_bytes, caption, summary, content_scope, summary_status, pdf_text_length
          FROM files
          WHERE bucket = ? AND content_hash = ?
          ORDER BY id DESC
@@ -1514,6 +2205,7 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
           bytes: Number(existing.size_bytes || bytes.length),
           caption: existing.caption ?? null,
           summary: typeof existing.summary === 'string' ? existing.summary : null,
+          content_scope: normalizeContentScope(existing.content_scope),
           summary_status: typeof existing.summary_status === 'string' ? existing.summary_status : 'unknown',
           pdf_text_length: Number(existing.pdf_text_length || 0),
           summary_async: false,
@@ -1526,6 +2218,7 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
       ...(metadataValue(sourceSender, 128) ? { source_sender: metadataValue(sourceSender, 128)! } : {}),
       ...(metadataValue(sourceMessageId, 128) ? { source_message_id: metadataValue(sourceMessageId, 128)! } : {}),
       ...(metadataValue(caption, 256) ? { caption: metadataValue(caption, 256)! } : {}),
+      content_scope: initialContentScope,
     };
     await s3SendWithTimeout(
       new PutObjectCommand({
@@ -1560,12 +2253,13 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
         pdf_text_length,
         pdf_extractor,
         summary,
+        content_scope,
         summary_status,
         summary_error,
         summary_model,
         summary_raw_response,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
       ON CONFLICT(s3_key) DO UPDATE SET
         source = excluded.source,
         source_message_id = excluded.source_message_id,
@@ -1581,6 +2275,7 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
         pdf_text_length = excluded.pdf_text_length,
         pdf_extractor = excluded.pdf_extractor,
         summary = excluded.summary,
+        content_scope = excluded.content_scope,
         summary_status = excluded.summary_status,
         summary_error = excluded.summary_error,
         summary_model = excluded.summary_model,
@@ -1601,6 +2296,7 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
       0,
       null,
       null,
+      initialContentScope,
       initialSummaryStatus,
       null,
       null,
@@ -1623,6 +2319,7 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
       file_id: fileId,
       caption: caption || null,
       summary: null,
+      content_scope: initialContentScope,
       summary_status: initialSummaryStatus,
       pdf_text_length: 0,
       summary_async: shouldProcessPdfSummary && ASSISTANT_URL.length > 0,
@@ -1642,6 +2339,7 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
         caption,
         callbackUrl,
         callbackAuthorization,
+        contentScope: initialContentScope,
         baseMetadata,
         content: bytes,
       });
@@ -1665,42 +2363,26 @@ app.post('/llm-query', authMiddleware, async (req, res) => {
       return;
     }
 
-    const planPayload = {
+    const initialQuery = await runFileSearchQuery({
       prompt,
-      source_channel: sourceChannel || null,
-      source_from: sourceFrom || null,
-    };
-    const rawPlan = await sendSqlPlanRequestToAssistant(planPayload);
-    const parsedPlan = rawPlan ? parseFileSqlPlan(rawPlan) : null;
-    const fallbackSql =
-      `SELECT id, bucket, s3_key, filename, content_type, size_bytes, caption, summary, summary_status, created_at FROM files ORDER BY id DESC LIMIT ${FILE_SQL_MAX_ROWS}`;
-    const dateConstraint = extractDateConstraintFromPrompt(prompt);
-    const summaryFirstQuery = buildSummaryFallbackQuery(prompt, dateConstraint);
-    let rows = summaryFirstQuery ? await dbCtx.dbAll(summaryFirstQuery.sql, ...summaryFirstQuery.params) : [];
-    let effectiveSql = summaryFirstQuery?.sql || '';
-    let sql = enforceSafeFileSql(parsedPlan?.sql || fallbackSql);
-    if (sqlHasSourceConstraint(sql) && !promptMentionsSourceConstraint(prompt)) {
-      sql = fallbackSql;
-    }
-    if (rows.length === 0) {
-      if (dateConstraint && !sqlHasDateConstraint(sql)) {
-        sql = fallbackSql;
-      }
-      rows = await dbCtx.dbAll(sql);
-      effectiveSql = sql;
-    }
-    if ((!rows || rows.length === 0) && prompt) {
-      const fallbackQuery = buildContentFallbackQuery(prompt, dateConstraint);
-      if (fallbackQuery) {
-        const fallbackRows = await dbCtx.dbAll(fallbackQuery.sql, ...fallbackQuery.params);
-        if (fallbackRows.length > 0) {
-          rows = fallbackRows;
-          effectiveSql = fallbackQuery.sql;
-        }
-      }
-    }
+      owner,
+      dbCtx,
+      sourceChannel,
+      sourceFrom,
+    });
+    const refinement = await refineSonjaSearchResults({
+      originalPrompt: prompt,
+      owner,
+      dbCtx,
+      sourceChannel,
+      sourceFrom,
+      initialRows: initialQuery.rows,
+      initialSql: initialQuery.effectiveSql,
+    });
+    const rows = refinement.rows;
+    const effectiveSql = refinement.effectiveSql || initialQuery.effectiveSql;
     const isWhatsapp = String(sourceChannel || '').toLowerCase() === 'whatsapp' || isWhatsappChatId(sourceFrom);
-    const delivery = parsedPlan?.delivery === 'attach' || wantsFileDelivery(prompt) ? 'attach' : 'none';
+    const delivery = initialQuery.delivery;
 
     if (isWhatsapp && delivery === 'attach') {
       const selected = (rows || [])
@@ -1779,6 +2461,15 @@ app.post('/llm-query', authMiddleware, async (req, res) => {
       rows,
       sql: effectiveSql,
       delivery,
+      refinement:
+        normalizeOwner(owner) === SONJA_OWNER
+          ? {
+            enabled: true,
+            iterations: refinement.iterations,
+            confidence: refinement.confidence,
+            threshold: SONJA_REFINEMENT_CONFIDENCE_THRESHOLD,
+          }
+          : { enabled: false },
     });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err?.message || 'llm-query failed' });
@@ -1843,6 +2534,8 @@ app.get('/file/records', authMiddleware, async (req, res) => {
     const sourceSender = typeof req.query.source_sender === 'string' ? req.query.source_sender.trim() : '';
     const sourceMessageId =
       typeof req.query.source_message_id === 'string' ? req.query.source_message_id.trim() : '';
+    const contentScope =
+      typeof req.query.content_scope === 'string' ? normalizeContentScope(req.query.content_scope) : '';
     const where: string[] = [];
     const params: unknown[] = [];
     if (source) {
@@ -1857,9 +2550,13 @@ app.get('/file/records', authMiddleware, async (req, res) => {
       where.push('source_message_id = ?');
       params.push(sourceMessageId);
     }
+    if (contentScope) {
+      where.push('content_scope = ?');
+      params.push(contentScope);
+    }
     const sql =
       `SELECT id, source, source_message_id, source_sender, bucket, s3_key, filename, content_type, size_bytes, caption, ` +
-      `pdf_text_length, summary, summary_status, summary_error, created_at, updated_at FROM files ` +
+      `pdf_text_length, summary, content_scope, summary_status, summary_error, created_at, updated_at FROM files ` +
       `${where.length > 0 ? `WHERE ${where.join(' AND ')} ` : ''}` +
       `ORDER BY id DESC LIMIT ?;`;
     const rows = await dbCtx.dbAll(sql, ...params, limit);
@@ -1881,14 +2578,14 @@ app.get('/file/status', authMiddleware, async (req, res) => {
     }
     const row = Number.isFinite(id) && id > 0
       ? await dbCtx.dbGet(
-        `SELECT id, bucket, s3_key, filename, content_type, summary_status, summary, summary_error, created_at, updated_at
+        `SELECT id, bucket, s3_key, filename, content_type, content_scope, summary_status, summary, summary_error, created_at, updated_at
          FROM files
          WHERE id = ?
          LIMIT 1;`,
         Math.floor(id),
       )
       : await dbCtx.dbGet(
-        `SELECT id, bucket, s3_key, filename, content_type, summary_status, summary, summary_error, created_at, updated_at
+        `SELECT id, bucket, s3_key, filename, content_type, content_scope, summary_status, summary, summary_error, created_at, updated_at
          FROM files
          WHERE s3_key = ?
          LIMIT 1;`,
@@ -1904,6 +2601,7 @@ app.get('/file/status', authMiddleware, async (req, res) => {
           s3_key: key || null,
           filename: null,
           content_type: null,
+          content_scope: 'business',
           summary_status: 'deleted',
           summary: null,
           summary_error: 'status record removed',

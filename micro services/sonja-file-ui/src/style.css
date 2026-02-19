@@ -91,6 +91,33 @@ button:disabled {
   font-size: 0.85rem;
 }
 
+.loading-panel {
+  margin-top: 1rem;
+  display: grid;
+  justify-items: center;
+  gap: 0.45rem;
+}
+
+.loading-art {
+  width: min(240px, 72vw);
+  border-radius: 18px;
+  overflow: hidden;
+  border: 1px solid #c9c0ad;
+  box-shadow: 0 10px 24px rgba(33, 30, 22, 0.14);
+  animation: loadingPulse 2.1s ease-in-out infinite;
+}
+
+.loading-art img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.loading-text {
+  font-size: 0.8rem;
+  color: #575144;
+}
+
 .results {
   margin-top: 1rem;
   display: grid;
@@ -195,12 +222,27 @@ button:disabled {
   background: #2f6c4d;
 }
 
+@keyframes loadingPulse {
+  0% {
+    transform: scale(0.992);
+    opacity: 0.8;
+  }
+  50% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(0.992);
+    opacity: 0.8;
+  }
+}
+
 @media (max-width: 700px) {
   .prompt-row {
     grid-template-columns: 1fr;
   }
 
-  button {
+  .prompt-row button {
     width: 100%;
   }
 }

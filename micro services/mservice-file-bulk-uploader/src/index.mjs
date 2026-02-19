@@ -222,6 +222,7 @@ async function pollFileCompletion(statusUrl, authHeader, owner, fileId, key) {
     return {
       status,
       error: String(parsed.file.summary_error || "").trim(),
+      summary: String(parsed.file.summary || "").trim(),
       filename: String(parsed.file.filename || ""),
       contentType: String(parsed.file.content_type || "").trim().toLowerCase(),
     };
@@ -311,11 +312,13 @@ async function main() {
     const status = await pollFileCompletion(statusUrl, statusAuth, owner, uploaded.fileId, uploaded.key);
     if (status.status === "completed" || status.status === "skipped") {
       console.log(`Completed ${display} (status=${status.status})`);
+      console.log(`Summary ${display}: ${status.summary || "(no summary)"}`);
       successCount += 1;
       continue;
     }
     if (status.status === "deleted") {
       console.log(`Completed ${display} (status=deleted)`);
+      console.log(`Summary ${display}: ${status.summary || "(no summary)"}`);
       successCount += 1;
       continue;
     }
@@ -323,6 +326,7 @@ async function main() {
     if (status.status === "failed") {
       if (isNonFatalSummaryFailure(status.error)) {
         console.log(`Skipped ${display} due to non-fatal summary issue: ${status.error}`);
+        console.log(`Summary ${display}: ${status.summary || "(no summary)"}`);
         successCount += 1;
         continue;
       }
