@@ -1,7 +1,7 @@
 # File Microservice (Local S3)
 
 This service stores and serves files from your own S3-compatible endpoint (for example MinIO).
-It also keeps a SQLite index of uploaded files, extracts PDF text (with default password fallback),
+It also keeps a SQLite index of uploaded files, extracts PDF/Word text (with default password fallback for PDF),
 and can generate file summaries through the assistant endpoint.
 
 ## Quick Start
@@ -65,5 +65,6 @@ On upload:
 - file bytes are saved to S3
 - record is upserted in SQLite (`files` table)
 - if PDF, text extraction is attempted using `pdf2json`
+- if Word (`.docx`/`.doc`), text extraction is attempted using `mammoth`
 - if `ASSISTANT_URL` is set, summary is generated and stored in SQLite
 - summary snippet is written to S3 object metadata when available

@@ -182,6 +182,71 @@
       .shortcut-panel .shortcut-button:last-of-type {
         margin-bottom: 0;
       }
+      .upload-panel {
+        display: none;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 10px;
+        background: #0f1714;
+      }
+      .upload-panel.active {
+        display: block;
+      }
+      .upload-dropzone {
+        border: 1px dashed #2f9b66;
+        border-radius: 10px;
+        min-height: 110px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        padding: 14px;
+        color: var(--muted);
+      }
+      .upload-dropzone.dragover {
+        border-color: var(--accent);
+        background: rgba(79, 209, 139, 0.08);
+        color: var(--text);
+      }
+      .upload-queue {
+        margin-top: 10px;
+        max-height: 180px;
+        overflow: auto;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+      }
+      .upload-file-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 8px 10px;
+        border-bottom: 1px solid var(--border);
+      }
+      .upload-file-row:last-child {
+        border-bottom: none;
+      }
+      .upload-file-meta {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .upload-file-remove {
+        background: #3d1f1f;
+        color: #f7cdcd;
+        border: 1px solid #734040;
+        border-radius: 8px;
+        padding: 4px 8px;
+      }
+      .upload-controls {
+        margin-top: 10px;
+        display: flex;
+        gap: 8px;
+      }
+      .upload-caption {
+        margin-top: 10px;
+        width: 100%;
+      }
       .oauth-callback-panel {
         margin-top: 10px;
         padding: 10px;
@@ -728,6 +793,7 @@
               <button type="button" class="shortcut-button" id="remindMeShortcut">Remind Me</button>
               <button type="button" class="shortcut-button" id="homeAssistantShortcut">Home Assistant</button>
               <button type="button" class="shortcut-button" id="showScheduleShortcut">Show My Scheduler</button>
+              <button type="button" class="shortcut-button" id="uploadFilesShortcut">Upload Files</button>
               <div class="oauth-callback-panel" id="oauthCallbackPanel">
                 <div class="label">Codex Callback URL</div>
                 <textarea
@@ -742,6 +808,16 @@
           <div class="col">
             <form id="sendForm" class="panel">
               <textarea id="message" name="message" placeholder="Drop a message here..."></textarea>
+              <div id="uploadPanel" class="upload-panel">
+                <div id="uploadDropZone" class="upload-dropzone">Drag and drop files here, or click Add Files.</div>
+                <div class="upload-controls">
+                  <button type="button" id="uploadBrowseButton">Add Files</button>
+                  <button type="button" id="uploadClearButton">Clear Queue</button>
+                </div>
+                <input id="uploadFileInput" type="file" multiple style="display: none;" />
+                <textarea id="uploadCaption" class="upload-caption" placeholder="Optional caption to store with these files"></textarea>
+                <div class="upload-queue" id="uploadQueueList"></div>
+              </div>
               <button type="submit" id="sendButton">Send Message</button>
               <button type="button" id="sendNoCacheButton">Send Without Cache</button>
             </form>
@@ -784,6 +860,7 @@
                           <button type="button" class="icon-button email-viewer-nav-button" id="emailViewerPrevButton" aria-label="Previous email">&#8249;</button>
                           <span class="email-viewer-counter" id="emailViewerCounter">0/0</span>
                           <button type="button" class="icon-button email-viewer-nav-button" id="emailViewerNextButton" aria-label="Next email">&#8250;</button>
+                          <button type="button" class="icon-button email-viewer-nav-button" style="min-width: 120px;" id="emailViewerReplyButton" aria-label="Reply to this email">Reply</button>
                           <button type="button" class="icon-button email-viewer-nav-button close-button" id="emailViewerRemoveButton" aria-label="Remove from email viewer queue">&times;</button>
                         </div>
                       </div>
@@ -837,6 +914,7 @@
           const emailSummaryValue = document.getElementById("emailSummaryValue");
           const emailViewerPrevButton = document.getElementById("emailViewerPrevButton");
           const emailViewerNextButton = document.getElementById("emailViewerNextButton");
+          const emailViewerReplyButton = document.getElementById("emailViewerReplyButton");
           const emailViewerRemoveButton = document.getElementById("emailViewerRemoveButton");
           const emailViewerCounter = document.getElementById("emailViewerCounter");
           const emailViewerBusy = document.getElementById("emailViewerBusy");
@@ -859,10 +937,18 @@
           const remindMeShortcut = document.getElementById("remindMeShortcut");
           const homeAssistantShortcut = document.getElementById("homeAssistantShortcut");
           const showScheduleShortcut = document.getElementById("showScheduleShortcut");
+          const uploadFilesShortcut = document.getElementById("uploadFilesShortcut");
           const codexLoginShortcut = document.getElementById("codexLoginShortcut");
           const oauthCallbackPanel = document.getElementById("oauthCallbackPanel");
           const oauthCallbackInput = document.getElementById("oauthCallbackInput");
           const oauthCallbackSaveButton = document.getElementById("oauthCallbackSaveButton");
+          const uploadPanel = document.getElementById("uploadPanel");
+          const uploadDropZone = document.getElementById("uploadDropZone");
+          const uploadBrowseButton = document.getElementById("uploadBrowseButton");
+          const uploadClearButton = document.getElementById("uploadClearButton");
+          const uploadFileInput = document.getElementById("uploadFileInput");
+          const uploadQueueList = document.getElementById("uploadQueueList");
+          const uploadCaption = document.getElementById("uploadCaption");
           const replyPrevButton = document.getElementById("replyPrevButton");
           const replyNextButton = document.getElementById("replyNextButton");
           let socket = null;
@@ -902,6 +988,9 @@
           let browserNotifyEnabled = true;
           let activeViewerTab = "reply";
           let showEventsEnabled = false;
+          let uploadModeEnabled = false;
+          let uploadInProgress = false;
+          const uploadQueue = [];
           const eventsToggleStorageKey = "ai-assistant-events-visible";
 
           if (!showSendNoCacheButton && sendNoCacheButton) {
@@ -977,13 +1066,181 @@
             statusRow.classList.remove("waiting");
             statusText.textContent = "Idle";
             button.classList.remove("btn", "btn-warning");
-            button.textContent = "Send Message";
+            button.textContent = uploadModeEnabled ? "Send Files" : "Send Message";
             pendingRequestId = "";
           }
 
           function setWaiting(message) {
             statusRow.classList.add("waiting");
             statusText.textContent = "Waiting for " + message;
+          }
+
+          function formatFileSize(bytes) {
+            const size = Number(bytes || 0);
+            if (!Number.isFinite(size) || size <= 0) {
+              return "0 B";
+            }
+            const units = ["B", "KB", "MB", "GB"];
+            let value = size;
+            let index = 0;
+            while (value >= 1024 && index < units.length - 1) {
+              value /= 1024;
+              index += 1;
+            }
+            return `${value.toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+          }
+
+          function renderUploadQueue() {
+            uploadQueueList.textContent = "";
+            if (uploadQueue.length === 0) {
+              const empty = document.createElement("div");
+              empty.className = "upload-file-row";
+              empty.textContent = "No files queued.";
+              uploadQueueList.appendChild(empty);
+              return;
+            }
+            uploadQueue.forEach(function (entry, index) {
+              const row = document.createElement("div");
+              row.className = "upload-file-row";
+              const meta = document.createElement("div");
+              meta.className = "upload-file-meta";
+              meta.textContent = `${entry.file.name} (${formatFileSize(entry.file.size)})`;
+              const removeButton = document.createElement("button");
+              removeButton.type = "button";
+              removeButton.className = "upload-file-remove";
+              removeButton.textContent = "Remove";
+              removeButton.addEventListener("click", function () {
+                uploadQueue.splice(index, 1);
+                renderUploadQueue();
+              });
+              row.appendChild(meta);
+              row.appendChild(removeButton);
+              uploadQueueList.appendChild(row);
+            });
+          }
+
+          function setUploadMode(active) {
+            uploadModeEnabled = Boolean(active);
+            uploadPanel.classList.toggle("active", uploadModeEnabled);
+            textarea.style.display = uploadModeEnabled ? "none" : "block";
+            sendNoCacheButton.style.display = uploadModeEnabled ? "none" : (showSendNoCacheButton ? "block" : "none");
+            button.textContent = uploadModeEnabled ? "Send Files" : "Send Message";
+            if (uploadModeEnabled) {
+              textarea.value = "";
+              renderUploadQueue();
+              pushEvent("shortcut", "Upload Files");
+            }
+          }
+
+          function queueFiles(fileList) {
+            if (!fileList || typeof fileList.length !== "number") {
+              return;
+            }
+            for (const file of Array.from(fileList)) {
+              if (!file || !file.name) {
+                continue;
+              }
+              uploadQueue.push({ file });
+            }
+            renderUploadQueue();
+          }
+
+          function fileToBase64(file) {
+            return new Promise(function (resolve, reject) {
+              const reader = new FileReader();
+              reader.onload = function () {
+                const result = typeof reader.result === "string" ? reader.result : "";
+                const base64 = result.includes(",") ? result.split(",").pop() : result;
+                resolve(base64 || "");
+              };
+              reader.onerror = function () {
+                reject(new Error("unable to read file"));
+              };
+              reader.readAsDataURL(file);
+            });
+          }
+
+          async function sendQueuedUploads() {
+            if (uploadInProgress) {
+              return false;
+            }
+            if (uploadQueue.length === 0) {
+              pushEvent("upload", "queue is empty");
+              return false;
+            }
+            uploadInProgress = true;
+            setWaiting("file uploads");
+            button.disabled = true;
+            sendNoCacheButton.disabled = true;
+            const caption = String(uploadCaption.value || "");
+            const succeeded = [];
+            const failed = [];
+            try {
+              for (const entry of uploadQueue) {
+                const file = entry.file;
+                try {
+                  const base64 = await fileToBase64(file);
+                  const response = await fetch("/upload-file", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      filename: file.name,
+                      mimeType: file.type || "application/octet-stream",
+                      dataBase64: base64,
+                      caption,
+                    }),
+                  });
+                  const payload = await response.json().catch(function () {
+                    return {};
+                  });
+                  if (!response.ok || !payload.success) {
+                    const reason = payload && payload.message ? payload.message : `HTTP ${response.status}`;
+                    failed.push(`${file.name}: ${reason}`);
+                    pushEvent("upload", `${file.name} failed (${reason})`);
+                    continue;
+                  }
+                  const fileId = payload.file_id ? String(payload.file_id) : "unknown";
+                  succeeded.push(`${file.name} (id ${fileId})`);
+                  pushEvent("upload", `${file.name} queued successfully (id ${fileId})`);
+                } catch (error) {
+                  const reason = error instanceof Error ? error.message : "upload failed";
+                  failed.push(`${file.name}: ${reason}`);
+                  pushEvent("upload", `${file.name} failed (${reason})`);
+                }
+              }
+            } finally {
+              uploadInProgress = false;
+              button.disabled = false;
+              sendNoCacheButton.disabled = false;
+              setIdle();
+            }
+
+            const lines = [];
+            if (succeeded.length > 0) {
+              lines.push(`Queued successfully (${succeeded.length}):`);
+              lines.push(succeeded.join("\n"));
+            }
+            if (failed.length > 0) {
+              if (lines.length > 0) {
+                lines.push("");
+              }
+              lines.push(`Failed (${failed.length}):`);
+              lines.push(failed.join("\n"));
+            }
+            if (lines.length === 0) {
+              lines.push("No files were uploaded.");
+            }
+            clearResult();
+            promptValue.textContent = `upload files (${uploadQueue.length})`;
+            replyValue.textContent = lines.join("\n");
+            pushReplyHistoryEntry({
+              prompt: promptValue.textContent,
+              message: replyValue.textContent,
+            });
+            uploadQueue.length = 0;
+            renderUploadQueue();
+            uploadCaption.value = "";
+            return true;
           }
 
           async function ensureBrowserNotificationPermission() {
@@ -1161,6 +1418,7 @@
                 replyCommand: typeof entry.replyCommand === "string" ? entry.replyCommand : "",
               attachmentCommand: typeof entry.attachmentCommand === "string" ? entry.attachmentCommand : "",
               summary: typeof entry.summary === "string" ? entry.summary : "",
+              summaryAvailable: Boolean(entry.summaryAvailable),
               detailsLoaded: Boolean(entry.detailsLoaded),
               createdAt,
             };
@@ -1286,6 +1544,7 @@
               "subject",
               "ai_summary",
               "summary",
+              "summary_available",
               "body_text",
               "text_body",
               "body_html",
@@ -1326,6 +1585,10 @@
             const aiSummary =
               (typeof payload.ai_summary === "string" ? payload.ai_summary.trim() : "") ||
               (typeof payload.summary === "string" ? payload.summary.trim() : "");
+            const summaryAvailable =
+              typeof payload.summary_available === "boolean"
+                ? payload.summary_available
+                : Boolean(aiSummary);
             return {
               id: payloadId || fallbackId,
               from: typeof payload.from === "string" ? payload.from.trim() : "",
@@ -1339,6 +1602,7 @@
                 viewerHtml ||
                 ((viewerMode === "imap" || viewerMode === "cache-html") ? (bodyHtml || bodyHtmlAlt || "") : ""),
               summary: aiSummary || "",
+              summaryAvailable: summaryAvailable,
             };
           }
 
@@ -1374,6 +1638,10 @@
               const aiSummary =
                 (typeof entry.ai_summary === "string" ? entry.ai_summary.trim() : "") ||
                 (typeof entry.summary === "string" ? entry.summary.trim() : "");
+              const summaryAvailable =
+                typeof entry.summary_available === "boolean"
+                  ? entry.summary_available
+                  : Boolean(aiSummary);
               normalized.push({
                 id: id,
                 from: typeof entry.from_raw === "string" ? entry.from_raw : "",
@@ -1387,6 +1655,7 @@
                 attachments: attachmentNames,
                 attachmentIds: attachmentIds,
                 summary: aiSummary || "",
+                summaryAvailable: summaryAvailable,
                 detailsLoaded: true,
               });
             }
@@ -1427,6 +1696,9 @@
                 }
                 if ((!target.summary || !String(target.summary).trim()) && typeof row.summary === "string" && row.summary.trim()) {
                   target.summary = row.summary.trim();
+                }
+                if (typeof row.summaryAvailable === "boolean") {
+                  target.summaryAvailable = row.summaryAvailable;
                 }
                 target.detailsLoaded = true;
               }
@@ -1547,7 +1819,24 @@
             emailViewerCounter.textContent = current + "/" + total;
             emailViewerPrevButton.disabled = total === 0 || emailViewerQueueIndex <= 0;
             emailViewerNextButton.disabled = total === 0 || emailViewerQueueIndex >= total - 1;
+            emailViewerReplyButton.disabled = total === 0 || emailViewerQueueIndex < 0 || emailViewerQueueIndex >= total;
             emailViewerRemoveButton.disabled = total === 0 || emailViewerQueueIndex < 0;
+          }
+
+          function prefillReplyForCurrentEmail() {
+            if (emailViewerQueue.length === 0 || emailViewerQueueIndex < 0 || emailViewerQueueIndex >= emailViewerQueue.length) {
+              renderEmailViewerQueueNav();
+              return;
+            }
+            const card = emailViewerQueue[emailViewerQueueIndex];
+            const emailId = Number(card && card.id);
+            if (!Number.isFinite(emailId) || emailId <= 0) {
+              return;
+            }
+            textarea.value = `reply to mail id ${Math.floor(emailId)} with body `;
+            textarea.focus();
+            textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+            pushEvent("prefill", `reply to mail id ${Math.floor(emailId)} with body`);
           }
 
           function persistEmailViewerQueue() {
@@ -1952,6 +2241,7 @@
                 replyCommand: "",
                 attachmentCommand: "",
                 summary: "",
+                summaryAvailable: false,
                 detailsLoaded: false,
               };
               const preloaded = emailViewerPreloadedById[key];
@@ -1970,6 +2260,8 @@
                 if (Array.isArray(preloaded.attachmentIds) && preloaded.attachmentIds.length > 0) {
                   card.attachmentIds = preloaded.attachmentIds.slice();
                 }
+                card.summary = typeof preloaded.summary === "string" ? preloaded.summary : card.summary;
+                card.summaryAvailable = Boolean(preloaded.summaryAvailable);
                 card.detailsLoaded = Boolean(preloaded.detailsLoaded);
               }
               byId[key] = card;
@@ -2015,6 +2307,7 @@
                   const summaryMatch = line.match(/^\s*Summary:\s*(.+?)\s*$/i);
                   if (summaryMatch) {
                     currentCard.summary = String(summaryMatch[1] || "").trim();
+                    currentCard.summaryAvailable = currentCard.summary.length > 0;
                     continue;
                   }
                   const folderMatch = line.match(/^\s*Folder:\s*(.+?)\s*$/i);
@@ -2234,43 +2527,83 @@
               emailViewerAttachments.appendChild(row);
             }
 
-            const baseSummary = buildEmailSummary(card);
             const rememberedSummary = getRememberedEmailSummary(card.id);
             const inlineSummary = typeof card.summary === "string" ? sanitizeRememberedAiSummary(card.summary) : "";
-            const hasAiSummary = Boolean(rememberedSummary || inlineSummary);
-            const summaryParts = [];
+            const aiSummaryRaw = rememberedSummary || inlineSummary;
+            const hasAiSummary = Boolean(aiSummaryRaw);
+            const summaryAttachments = document.createElement("div");
+            summaryAttachments.className = "email-summary-meta";
+            if (card.attachments.length > 0) {
+              for (let i = 0; i < card.attachments.length; i += 1) {
+                const name = card.attachments[i];
+                const id = card.attachmentIds[i] || "";
+                const row = document.createElement("div");
+                row.className = "email-viewer-attachment-row";
 
-            if (rememberedSummary) {
-              const aiText = normalizeSummaryDisplayText(rememberedSummary);
-              summaryParts.push(
-                '<div class="email-summary-ai-text">AI Summary:<br>' +
-                  escapeHtml(aiText).replace(/\r?\n/g, "<br>") +
-                  "</div>",
-              );
+                const nameEl = document.createElement("span");
+                nameEl.textContent = name + " (" + guessMimeTypeFromFilename(name) + ")";
+
+                const action = document.createElement("span");
+                if (id) {
+                  const tag = document.createElement("button");
+                  tag.type = "button";
+                  tag.className = "attachment-id-tag";
+                  tag.textContent = "ID: " + id;
+                  tag.addEventListener("click", function () {
+                    if (openS3BrowserAttachment(card.id, id, name)) {
+                      pushEvent("email-viewer", "opened attachment in s3 browser");
+                    }
+                  });
+                  action.appendChild(tag);
+                } else if (card.attachmentCommand) {
+                  const btn = document.createElement("button");
+                  btn.type = "button";
+                  btn.className = "attachment-id-tag";
+                  btn.textContent = "Download";
+                  btn.addEventListener("click", function () {
+                    requestEmailViewerAttachmentDownload(card.attachmentCommand, {
+                      preferredFilename: name,
+                    });
+                  });
+                  action.appendChild(btn);
+                }
+
+                row.appendChild(nameEl);
+                row.appendChild(action);
+                summaryAttachments.appendChild(row);
+              }
+            } else {
+              summaryAttachments.textContent = "Attachments: None";
             }
 
-            const base = getSourceHtmlOrText(baseSummary);
-            const baseHtml = base.isHtml ? base.html : escapeHtml(base.text).replace(/\r?\n/g, "<br>");
-            summaryParts.push('<div class="email-summary-meta">' + baseHtml + "</div>");
-
-            emailSummaryValue.innerHTML = summaryParts.join("");
-            if (!hasAiSummary) {
-              const actions = document.createElement("div");
-              actions.className = "email-summary-actions";
-              const generateButton = document.createElement("button");
-              generateButton.type = "button";
-              generateButton.className = "attachment-id-tag email-summary-generate-button";
-              const pendingForCurrent =
-                pendingEmailViewerSummaryRequest &&
-                String(pendingEmailViewerSummaryRequest.emailId || "") === String(card.id || "");
-              generateButton.disabled = Boolean(pendingForCurrent);
-              generateButton.textContent = pendingForCurrent ? "Generating..." : "Generate AI Summary";
-              generateButton.addEventListener("click", function () {
-                requestEmailViewerSummaryGeneration(card);
-                renderCurrentEmailViewerEntry();
-              });
-              actions.appendChild(generateButton);
-              emailSummaryValue.appendChild(actions);
+            if (hasAiSummary) {
+              const aiText = normalizeSummaryDisplayText(aiSummaryRaw);
+              emailSummaryValue.innerHTML =
+                '<div class="email-summary-ai-text">AI Summary:<br>' +
+                escapeHtml(aiText).replace(/\r?\n/g, "<br>") +
+                "</div>";
+              emailSummaryValue.appendChild(summaryAttachments);
+            } else {
+              emailSummaryValue.innerHTML = "";
+              emailSummaryValue.appendChild(summaryAttachments);
+              if (!card.summaryAvailable) {
+                const actions = document.createElement("div");
+                actions.className = "email-summary-actions";
+                const generateButton = document.createElement("button");
+                generateButton.type = "button";
+                generateButton.className = "attachment-id-tag email-summary-generate-button";
+                const pendingForCurrent =
+                  pendingEmailViewerSummaryRequest &&
+                  String(pendingEmailViewerSummaryRequest.emailId || "") === String(card.id || "");
+                generateButton.disabled = Boolean(pendingForCurrent);
+                generateButton.textContent = pendingForCurrent ? "Generating..." : "Generate AI Summary";
+                generateButton.addEventListener("click", function () {
+                  requestEmailViewerSummaryGeneration(card);
+                  renderCurrentEmailViewerEntry();
+                });
+                actions.appendChild(generateButton);
+                emailSummaryValue.appendChild(actions);
+              }
             }
             emailSummaryValue.classList.remove("email-viewer-empty");
             renderEmailViewerQueueNav();
@@ -2895,6 +3228,7 @@
                       }
                       if (generatedSummary) {
                         target.summary = generatedSummary;
+                        target.summaryAvailable = true;
                       }
                       if (generatedSummary || target.body) {
                         const existingMemory =
@@ -2938,6 +3272,8 @@
                       target.subfolder = details.subfolder || target.subfolder || "";
                       target.body = details.body || target.body || "";
                       target.viewerHtml = details.viewerHtml || target.viewerHtml || "";
+                      target.summary = details.summary || target.summary || "";
+                      target.summaryAvailable = Boolean(details.summaryAvailable || target.summary);
                       target.detailsLoaded = true;
                       persistEmailViewerQueue();
                       if (emailViewerQueueIndex === targetIndex) {
@@ -2978,6 +3314,8 @@
                       target.subfolder = structuredDetails.subfolder || target.subfolder || "";
                       target.body = structuredDetails.body || target.body || "";
                       target.viewerHtml = structuredDetails.viewerHtml || target.viewerHtml || "";
+                      target.summary = structuredDetails.summary || target.summary || "";
+                      target.summaryAvailable = Boolean(structuredDetails.summaryAvailable || target.summary);
                       target.detailsLoaded = true;
                       persistEmailViewerQueue();
                       if (emailViewerQueueIndex === queueIndex) {
@@ -3198,6 +3536,10 @@
             renderCurrentEmailViewerEntry();
           });
 
+          emailViewerReplyButton.addEventListener("click", function () {
+            prefillReplyForCurrentEmail();
+          });
+
           openAiApiToggle.addEventListener("click", function () {
             openAiApiEnabled = !openAiApiEnabled;
             if (openAiApiEnabled) {
@@ -3279,6 +3621,10 @@
 
           form.addEventListener("submit", function (event) {
             event.preventDefault();
+            if (uploadModeEnabled) {
+              void sendQueuedUploads();
+              return;
+            }
             if (button.textContent === "Cancel" && pendingRequestId) {
               if (socket && socket.readyState === WebSocket.OPEN) {
                 socket.send(JSON.stringify({ type: "cancel", requestId: pendingRequestId }));
@@ -3296,6 +3642,9 @@
           });
 
           sendNoCacheButton.addEventListener("click", function () {
+            if (uploadModeEnabled) {
+              return;
+            }
             const message = textarea.value.trim();
             if (!sendMessage(message, { skipCache: true })) {
               return;
@@ -3305,6 +3654,7 @@
           });
 
           checkMailShortcut.addEventListener("click", function () {
+            setUploadMode(false);
             const sent = sendMessage("check mail", { prefillOnReply: "my mails" });
             if (sent) {
               pushEvent("shortcut", "Check Mail");
@@ -3312,6 +3662,7 @@
           });
 
           remindMeShortcut.addEventListener("click", function () {
+            setUploadMode(false);
             textarea.value = "remind me ";
             textarea.focus();
             textarea.setSelectionRange(textarea.value.length, textarea.value.length);
@@ -3319,6 +3670,7 @@
           });
 
           homeAssistantShortcut.addEventListener("click", function () {
+            setUploadMode(false);
             textarea.value = "HASS ";
             textarea.focus();
             textarea.setSelectionRange(textarea.value.length, textarea.value.length);
@@ -3326,13 +3678,48 @@
           });
 
           showScheduleShortcut.addEventListener("click", function () {
+            setUploadMode(false);
             const sent = sendMessage("show my crons");
             if (sent) {
               pushEvent("shortcut", "Show My Scheduler");
             }
           });
 
+          uploadFilesShortcut.addEventListener("click", function () {
+            setUploadMode(!uploadModeEnabled);
+          });
+
+          uploadBrowseButton.addEventListener("click", function () {
+            uploadFileInput.click();
+          });
+
+          uploadClearButton.addEventListener("click", function () {
+            uploadQueue.length = 0;
+            renderUploadQueue();
+          });
+
+          uploadFileInput.addEventListener("change", function () {
+            queueFiles(uploadFileInput.files);
+            uploadFileInput.value = "";
+          });
+
+          uploadDropZone.addEventListener("dragover", function (event) {
+            event.preventDefault();
+            uploadDropZone.classList.add("dragover");
+          });
+
+          uploadDropZone.addEventListener("dragleave", function () {
+            uploadDropZone.classList.remove("dragover");
+          });
+
+          uploadDropZone.addEventListener("drop", function (event) {
+            event.preventDefault();
+            uploadDropZone.classList.remove("dragover");
+            queueFiles(event.dataTransfer ? event.dataTransfer.files : null);
+          });
+
           codexLoginShortcut.addEventListener("click", function () {
+            setUploadMode(false);
             if (!socket || socket.readyState !== WebSocket.OPEN) {
               pushEvent("shortcut", "Codex Login (socket not connected)");
               return;
@@ -3394,6 +3781,7 @@
           renderControlPanelCollapsed();
           renderNotifyToggles();
           renderExecutionToggles();
+          setUploadMode(false);
           const storedEventsVisibility = localStorage.getItem(eventsToggleStorageKey);
           showEventsEnabled = storedEventsVisibility === "true";
           renderEventsToggle();

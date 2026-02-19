@@ -82,6 +82,7 @@ type ParsedEmailResponse = {
   notify?: unknown;
   ai_summary?: unknown;
   summary?: unknown;
+  summary_available?: unknown;
   email_id?: unknown;
   emailId?: unknown;
   id?: unknown;
@@ -110,6 +111,7 @@ type ParsedEmailViewerRow = {
   attachment_ids: string;
   ai_summary: string;
   summary: string;
+  summary_available: boolean;
 };
 
 type ParsedUiAction = {
@@ -267,6 +269,10 @@ function parseEmailViewerPayload(
     (typeof parsed.ai_summary === "string" ? parsed.ai_summary.trim() : "") ||
     (typeof parsed.summary === "string" ? parsed.summary.trim() : "") ||
     summaryFallback.trim();
+  const summaryAvailable =
+    typeof parsed.summary_available === "boolean"
+      ? parsed.summary_available
+      : Boolean(summaryValue);
   const bodyFromParsedEmail = typeof parsedEmail.body === "string" ? parsedEmail.body : "";
   const cachedBody = splitCachedBody(bodyFromParsedEmail);
   const resolvedBodyHtml = cachedBody.bodyHtml;
@@ -286,6 +292,7 @@ function parseEmailViewerPayload(
     viewer_mode: resolvedBodyHtml ? "cache-html" : "cache-text",
     ai_summary: summaryValue,
     summary: summaryValue,
+    summary_available: summaryAvailable,
   };
 }
 
@@ -319,6 +326,7 @@ function parseEmailViewerRowsPayload(parsed: ParsedEmailResponse): ParsedEmailVi
         attachment_ids: typeof row.attachment_ids === "string" ? row.attachment_ids : "",
         ai_summary: typeof row.ai_summary === "string" ? row.ai_summary : "",
         summary: typeof row.summary === "string" ? row.summary : "",
+        summary_available: Boolean(row.summary_available),
       };
     })
     .filter((entry): entry is ParsedEmailViewerRow => entry !== null);

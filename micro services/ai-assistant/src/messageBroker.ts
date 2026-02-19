@@ -5,6 +5,7 @@ import { broadcastEvent } from "./websocket.js";
 import type { TopicResult } from "./ollamaClient.js";
 import { handleHomeAssistant } from "./homeAssistant.js";
 import { handleEmail } from "./email.js";
+import { handleFile } from "./file.js";
 import { handleGeneral } from "./general.js";
 import { handleSchedule } from "./schedule.js";
 import { handleCronQuery } from "./cronQuery.js";
@@ -714,6 +715,15 @@ function getTopicOverride(message: string): TopicResult | null {
   if (hasAttachmentKeyword && (hasEmailKeyword || hasMailIdReference)) {
     return { topic: "email", contextRequired: false };
   }
+  const hasFileKeyword =
+    /\b(file|files|document|documents|upload|uploads)\b/i.test(normalizedMessage) ||
+    /\bfile\s+id\b/i.test(normalizedMessage);
+  const hasFileAction =
+    /\b(show|list|find|search|get|download|open|send|latest|last|recent|summary|lookup)\b/i.test(normalizedMessage) ||
+    /\blook(?:ing)?\s+for\b/i.test(normalizedMessage);
+  if (hasFileKeyword && hasFileAction) {
+    return { topic: "file", contextRequired: false };
+  }
   const hasWebKeyword =
     /\b(web|website|webpage|browser|playwright|todomvc)\b/i.test(normalizedMessage) ||
     /\bweb search\b/i.test(normalizedMessage);
@@ -1352,6 +1362,9 @@ async function compileByTopic(
     }
     if (topic === "email") {
       return handleEmail(uuid, inputMessage, confirmKey, { skipCache });
+    }
+    if (topic === "file") {
+      return handleFile(uuid, inputMessage, confirmKey, { skipCache });
     }
     if (topic === "schedule") {
       return handleSchedule(uuid, confirmKey, inputMessage);

@@ -124,7 +124,9 @@ function isJsonRpcRequest(value: unknown): value is JsonRpcRequest {
   return record.jsonrpc === "2.0" && typeof record.method === "string";
 }
 
-function isRequestPayload(value: unknown): value is { prompt: string; result: string } {
+function isRequestPayload(
+  value: unknown
+): value is { prompt: string; result: string; skip_cache?: boolean; skipCache?: boolean } {
   if (!value || typeof value !== "object") {
     return false;
   }
@@ -1256,11 +1258,16 @@ export async function entryPoint(payload: unknown): Promise<EntryResult | null> 
     const intent = parseIntent(requestPayload.result);
     console.log("[request] parsed", JSON.stringify({ verb, intent }));
     const entities = getEntitiesList();
-    const cacheEnabled = isCacheEnabled();
-    const responseCacheEnabled = isResponseCacheEnabled();
+    const skipCacheForRequest =
+      requestPayload.skip_cache === true || requestPayload.skipCache === true;
+    const cacheEnabled = isCacheEnabled() && !skipCacheForRequest;
+    const responseCacheEnabled = isResponseCacheEnabled() && !skipCacheForRequest;
     const cacheKey = normalizeCacheKey(requestPayload.prompt);
     const forceWaterUsageRead = isWaterUsageReadIntent(requestPayload.prompt);
-    console.log("[request] cache", JSON.stringify({ cacheEnabled, responseCacheEnabled, cacheKey }));
+    console.log(
+      "[request] cache",
+      JSON.stringify({ cacheEnabled, responseCacheEnabled, skipCacheForRequest, cacheKey })
+    );
     const executeActionFromCall = async (
       tool: string,
       args: Record<string, unknown>,

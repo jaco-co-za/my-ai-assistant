@@ -27,14 +27,17 @@ console.error = (...args: unknown[]) => {
   broadcastLog(args.map(String).join(" "));
 };
 const port = Number(process.env.WEBHOOK_PORT) || 3350;
+const bodyLimit = (process.env.WEBHOOK_BODY_LIMIT || "100mb").trim() || "100mb";
 
 const ui = express();
 const queuePort = 8599;
 
 ui.use(express.urlencoded({ extended: false }));
+ui.use(express.json({ limit: bodyLimit }));
 ui.use("/assets", express.static("node_modules/bootstrap/dist/css"));
 
-app.use(express.json());
+app.use(express.json({ limit: bodyLimit }));
+app.use(express.urlencoded({ extended: true, limit: bodyLimit }));
 app.use((req, _res, next) => {
   const startedAt = Date.now();
   console.log(`[req] ${req.method} ${req.originalUrl} ip=${req.ip}`);
@@ -94,6 +97,17 @@ registerWebsocket(server);
 broadcastReload();
 
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  const entityTooLarge =
+    !!err &&
+    typeof err === "object" &&
+    (((err as { type?: unknown }).type === "entity.too.large") ||
+      ((err as { status?: unknown }).status === 413));
+  if (entityTooLarge) {
+    const detail = `Payload too large. Increase WEBHOOK_BODY_LIMIT (current: ${bodyLimit}).`;
+    console.error(`[error] ${detail}`);
+    res.status(413).json({ error: detail });
+    return;
+  }
   const message = err instanceof Error ? err.message : "unknown error";
   console.error(`[error] ${message}`);
   res.status(500).json({ error: "internal server error" });

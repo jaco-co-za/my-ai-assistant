@@ -118,6 +118,7 @@ type LlmResponse = {
   body_html?: string;
   ai_summary?: string;
   summary?: string;
+  summary_available?: boolean;
   attachment_details?: Array<{
     id: number;
     filename: string | null;
@@ -142,6 +143,7 @@ type LlmResponse = {
     attachment_ids: string;
     ai_summary: string;
     summary: string;
+    summary_available: boolean;
   }>;
   attachments?: Array<{
     attachment_id: number;
@@ -3253,6 +3255,7 @@ async function buildEmailViewerRows(dbAll: DbAll, rows: any[]): Promise<Array<{
   attachment_ids: string;
   ai_summary: string;
   summary: string;
+  summary_available: boolean;
 }>> {
   if (!Array.isArray(rows) || rows.length === 0) {
     return [];
@@ -3314,6 +3317,7 @@ async function buildEmailViewerRows(dbAll: DbAll, rows: any[]): Promise<Array<{
     attachment_ids: string;
     ai_summary: string;
     summary: string;
+    summary_available: boolean;
   }> = [];
   for (const id of ids) {
     const row = byId.get(id);
@@ -3338,6 +3342,8 @@ async function buildEmailViewerRows(dbAll: DbAll, rows: any[]): Promise<Array<{
         typeof row.ai_summary === 'string' && !isInvalidSummaryText(row.ai_summary) ? row.ai_summary : '',
       summary:
         typeof row.ai_summary === 'string' && !isInvalidSummaryText(row.ai_summary) ? row.ai_summary : '',
+      summary_available:
+        typeof row.ai_summary === 'string' && row.ai_summary.trim().length > 0 && !isInvalidSummaryText(row.ai_summary),
     });
   }
   return result;
@@ -3951,6 +3957,7 @@ export function createLlmHandler({
         body_text: normalizedBody,
         body_html: normalizedHtmlBody,
         ai_summary: summaryText || '',
+        summary_available: Boolean(summaryText && summaryText.trim().length > 0),
         email: {
           id: Number(row.id),
           from_raw: row?.from_raw ? String(row.from_raw) : null,
@@ -4041,6 +4048,7 @@ export function createLlmHandler({
         body_text: structuredPayload.body_text,
         body_html: structuredPayload.body_html,
         ai_summary: structuredPayload.ai_summary,
+        summary_available: structuredPayload.summary_available,
         attachment_details: structuredPayload.attachment_details,
         summary: structuredPayload.summary,
         pdf_sections: structuredPayload.pdf_sections,

@@ -197,6 +197,19 @@ function isTemporaryRequest(message: string): boolean {
   return false;
 }
 
+function isWeatherRequest(message: string): boolean {
+  const normalized = String(message || "").toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return (
+    /\bweather\b/.test(normalized) ||
+    /\btemperature\b/.test(normalized) ||
+    /\bforecast\b/.test(normalized) ||
+    /\bhumidity\b/.test(normalized)
+  );
+}
+
 export async function handleHomeAssistant(
   uuid: string,
   message: string,
@@ -204,6 +217,8 @@ export async function handleHomeAssistant(
   options?: { skipCache?: boolean },
 ): Promise<BrokerResult> {
   const skipCache = Boolean(options?.skipCache);
+  const forceLiveWeather = isWeatherRequest(message);
+  const effectiveSkipCache = skipCache || forceLiveWeather;
   const isCron = typeof fromSystem === "string" && fromSystem.startsWith("cron-");
   if (isCron) {
     const payload = {
@@ -265,7 +280,7 @@ export async function handleHomeAssistant(
         return { success: false, code: 400, msg: "Unable to read current state", uuid };
       }
 
-      const immediateIntent = await intentClassifier(temporary.action, "homeassistant", { skipCache });
+      const immediateIntent = await intentClassifier(temporary.action, "homeassistant", { skipCache: effectiveSkipCache });
   if (!immediateIntent.intent || immediateIntent.intent === "unknown") {
         return {
           success: false,
@@ -314,7 +329,7 @@ export async function handleHomeAssistant(
     }
   }
 
-  const intent = await intentClassifier(message, "homeassistant", { skipCache });
+  const intent = await intentClassifier(message, "homeassistant", { skipCache: effectiveSkipCache });
 
   if (!intent.intent || intent.intent === "unknown") {
     return {
@@ -342,6 +357,7 @@ export async function handleHomeAssistant(
   const payload = {
     prompt: message,
     result: llmResult,
+    skip_cache: effectiveSkipCache,
   };
 
   try {

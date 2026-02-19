@@ -12,6 +12,8 @@ import { broadcastEvent } from "./websocket.js";
 import { listDynamicIntents } from "./dynamicIntents.js";
 
 const DEFAULT_FILE_UPLOAD_URL = "http://localhost:3224/file/upload";
+const DEFAULT_WHATSAPP_MESSAGE_URL = "http://localhost:8085/message";
+const DEFAULT_UI_UPLOAD_CALLBACK_PATH = "/file/upload-status";
 
 function resolveFileUploadUrl(raw?: string): string {
   const candidate = (raw ?? "").trim();
@@ -34,34 +36,139 @@ function isWhatsappInbound(from: string): boolean {
   return value.includes("@lid") || value.includes("whatsapp");
 }
 
-function inferFilename(body: any, bodyMimeType: string): string {
-  const explicitName =
-    typeof body?.media?.filename === "string" && body.media.filename.trim().length > 0
-      ? body.media.filename.trim()
-      : "";
+function resolveWhatsappMessageUrl(raw?: string): string {
+  const candidate = (raw ?? "").trim();
+  if (!candidate) {
+    return DEFAULT_WHATSAPP_MESSAGE_URL;
+  }
+  return /^https?:\/\//i.test(candidate) ? candidate : `http://${candidate}`;
+}
+
+async function sendWhatsappStoredPdfNotice(chatId: string, text: string): Promise<void> {
+  const normalizedChatId = String(chatId || "").trim();
+  const normalizedText = String(text || "").trim();
+  if (!normalizedChatId || !normalizedText) {
+    return;
+  }
+  const url = resolveWhatsappMessageUrl(process.env.WHATSAPP_MESSAGE_URL);
+  const auth = (process.env.WHATSAPP_MESSAGE_AUTH ?? "").trim();
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (auth) {
+    headers.Authorization = auth;
+  }
+  await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      chatId: normalizedChatId,
+      text: normalizedText,
+      message: normalizedText,
+    }),
+  });
+}
+
+function extensionFromMime(mimeType: string): string {
+  const normalizedMime = String(mimeType || "").toLowerCase();
+  if (normalizedMime.includes("pdf")) {
+    return "pdf";
+  }
+  if (normalizedMime.includes("msword")) {
+    return "doc";
+  }
+  if (normalizedMime.includes("officedocument.wordprocessingml.document")) {
+    return "docx";
+  }
+  if (normalizedMime.includes("jpeg") || normalizedMime.includes("jpg")) {
+    return "jpg";
+  }
+  if (normalizedMime.includes("png")) {
+    return "png";
+  }
+  if (normalizedMime.includes("gif")) {
+    return "gif";
+  }
+  if (normalizedMime.includes("webp")) {
+    return "webp";
+  }
+  if (normalizedMime.includes("mp4")) {
+    return "mp4";
+  }
+  if (normalizedMime.includes("mpeg")) {
+    return "mpeg";
+  }
+  if (normalizedMime.includes("plain")) {
+    return "txt";
+  }
+  return "bin";
+}
+
+function inferFilename(body: any, bodyMimeType: string, messageId?: string): string {
+  const explicitName = (() => {
+    const lower =
+      typeof body?.media?.filename === "string" && body.media.filename.trim().length > 0
+        ? body.media.filename.trim()
+        : "";
+    if (lower) {
+      return lower;
+    }
+    const camel =
+      typeof body?.media?.fileName === "string" && body.media.fileName.trim().length > 0
+        ? body.media.fileName.trim()
+        : "";
+    return camel;
+  })();
   if (explicitName) {
     return explicitName;
   }
   const normalizedMime = String(bodyMimeType || "").toLowerCase();
+  const suffix = String(messageId || "").trim().replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 24);
+  const ext = extensionFromMime(normalizedMime);
+  const idPart = suffix ? `-${suffix}` : "";
   if (normalizedMime.includes("pdf")) {
-    return "whatsapp-file.pdf";
+    return `whatsapp-file${idPart}.pdf`;
   }
   if (normalizedMime.startsWith("image/")) {
-    return "whatsapp-image";
+    return `whatsapp-image${idPart}.${ext}`;
   }
   if (normalizedMime.startsWith("video/")) {
-    return "whatsapp-video";
+    return `whatsapp-video${idPart}.${ext}`;
   }
-  return "whatsapp-file.bin";
+  return `whatsapp-file${idPart}.${ext}`;
 }
 
-async function uploadWhatsappMediaToFileService(args: {
-  from: string;
-  messageId: string;
+function isPdfUpload(args: { mimeType?: string; filename?: string }): boolean {
+  const mime = String(args.mimeType || "").toLowerCase();
+  const name = String(args.filename || "").toLowerCase();
+  return mime.includes("pdf") || name.endsWith(".pdf");
+}
+
+function resolveUiUploadCallbackUrl(): string {
+  const explicit = String(process.env.UI_FILE_UPLOAD_CALLBACK_URL ?? "").trim();
+  if (explicit) {
+    return /^https?:\/\//i.test(explicit) ? explicit : `http://${explicit}`;
+  }
+  const hostRaw = String(process.env.UI_UPLOAD_CALLBACK_HOST ?? process.env.UI_WEBSOCKET_URL ?? "localhost").trim();
+  const host = hostRaw
+    .replace(/^wss?:\/\//i, "")
+    .replace(/^https?:\/\//i, "")
+    .replace(/\/ws\/?$/i, "")
+    .replace(/\/+$/, "");
+  const port = Number(process.env.WEBHOOK_PORT) || 3350;
+  const hasPort = /:\d+$/.test(host);
+  const base = `http://${host}${hasPort ? "" : `:${port}`}`;
+  return `${base.replace(/\/+$/, "")}${DEFAULT_UI_UPLOAD_CALLBACK_PATH}`;
+}
+
+async function uploadToFileService(args: {
+  source: string;
+  sourceSender: string;
+  sourceMessageId: string;
   caption: string;
   mimeType: string;
   filename: string;
   base64: string;
+  callbackUrl?: string;
+  callbackAuthorization?: string;
 }): Promise<{ fileId: number | null; key: string | null; summary: string | null }> {
   const url = resolveFileUploadUrl(process.env.FILE_MICRO_SERVICE_URL);
   const token = normalizeBearer(process.env.FILE_MICRO_SERVICE_AUTH ?? process.env.WEBHOOK_BEARER_TOKEN ?? "");
@@ -72,13 +179,15 @@ async function uploadWhatsappMediaToFileService(args: {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     body: JSON.stringify({
-      source: "whatsapp",
-      source_sender: args.from,
-      source_message_id: args.messageId || null,
+      source: args.source,
+      source_sender: args.sourceSender,
+      source_message_id: args.sourceMessageId || null,
       caption: args.caption || null,
       filename: args.filename,
       content_type: args.mimeType || "application/octet-stream",
       data_base64: args.base64,
+      callback_url: args.callbackUrl || null,
+      callback_authorization: args.callbackAuthorization || null,
     }),
   });
   const text = await response.text();
@@ -128,6 +237,7 @@ export function registerEndpoints(
     let message = bodyMessage;
     let transcription = "";
     let uploadedFileId: number | null = null;
+    let uploadedNonAudioWhatsappMedia = false;
 
     if (bodyType === "audio") {
       if (bodyBase64.length > 0) {
@@ -167,15 +277,18 @@ export function registerEndpoints(
       }
     } else if (isWhatsappInbound(from) && bodyBase64.length > 0) {
       try {
-        const uploaded = await uploadWhatsappMediaToFileService({
-          from,
-          messageId: bodyMessageId,
+        const inferredFilename = inferFilename(body, bodyMimeType, bodyMessageId);
+        const uploaded = await uploadToFileService({
+          source: "whatsapp",
+          sourceSender: from,
+          sourceMessageId: bodyMessageId,
           caption: bodyCaption,
           mimeType: bodyMimeType,
-          filename: inferFilename(body, bodyMimeType),
+          filename: inferredFilename,
           base64: bodyBase64,
         });
         uploadedFileId = uploaded.fileId;
+        uploadedNonAudioWhatsappMedia = true;
         console.log(
           `[whatsapp-file] stored from=${from} id=${uploaded.fileId ?? "unknown"} key=${uploaded.key ?? "unknown"} mime=${bodyMimeType || "unknown"} summary=${uploaded.summary ? "yes" : "no"}`,
         );
@@ -192,10 +305,6 @@ export function registerEndpoints(
       if (!message) {
         if (bodyCaption.trim().length > 0) {
           message = bodyCaption.trim();
-        } else if (uploadedFileId) {
-          message = `FILE-${uploadedFileId}`;
-        } else {
-          message = "File uploaded";
         }
       }
     }
@@ -215,6 +324,10 @@ export function registerEndpoints(
     }
 
     if (!from || !message) {
+      if (uploadedNonAudioWhatsappMedia && from && !message) {
+        res.status(200).json({ success: true, code: 200, msg: "" });
+        return;
+      }
       const safeBody =
         typeof body?.media?.base64 === "string"
           ? {
@@ -278,8 +391,61 @@ export function registerEndpoints(
     res.status(result.code).json(result);
   });
 
+  app.post("/file/upload-status", (req, res) => {
+    const filename = typeof req.body?.filename === "string" ? req.body.filename.trim() : "";
+    const fileIdRaw = Number(req.body?.file_id);
+    const fileId = Number.isFinite(fileIdRaw) && fileIdRaw > 0 ? String(Math.floor(fileIdRaw)) : "unknown";
+    const summaryStatus =
+      typeof req.body?.summary_status === "string" ? req.body.summary_status.trim().toLowerCase() : "unknown";
+    const errorDetail = typeof req.body?.error === "string" ? req.body.error.trim() : "";
+    const summaryRaw = typeof req.body?.summary === "string" ? req.body.summary.trim() : "";
+    const summary = summaryRaw.length > 240 ? `${summaryRaw.slice(0, 237)}...` : summaryRaw;
+    const baseLabel = filename || `file #${fileId}`;
+    if (summaryStatus === "failed") {
+      const detail = errorDetail
+        ? `${baseLabel} summary failed: ${errorDetail}`
+        : `${baseLabel} summary failed.`;
+      broadcastEvent("file-upload", detail);
+    }
+    res.status(200).json({ success: true });
+  });
+
   ui.get("/", (_req, res) => {
     res.status(200).type("html").send(readUiHtml());
+  });
+
+  ui.post("/upload-file", async (req, res) => {
+    const filename = typeof req.body?.filename === "string" ? req.body.filename.trim() : "";
+    const mimeType = typeof req.body?.mimeType === "string" ? req.body.mimeType.trim() : "";
+    const dataBase64 = typeof req.body?.dataBase64 === "string" ? req.body.dataBase64.trim() : "";
+    const caption = typeof req.body?.caption === "string" ? req.body.caption : "";
+    if (!filename || !dataBase64) {
+      res.status(400).json({ success: false, message: "filename and dataBase64 are required" });
+      return;
+    }
+    try {
+      const webhookToken = normalizeBearer(process.env.WEBHOOK_BEARER_TOKEN ?? "");
+      const uploaded = await uploadToFileService({
+        source: "ui",
+        sourceSender: "queue-ui",
+        sourceMessageId: "",
+        caption,
+        mimeType: mimeType || "application/octet-stream",
+        filename,
+        base64: dataBase64,
+        callbackUrl: resolveUiUploadCallbackUrl(),
+        callbackAuthorization: webhookToken ? `Bearer ${webhookToken}` : "",
+      });
+      res.status(201).json({
+        success: true,
+        file_id: uploaded.fileId,
+        key: uploaded.key,
+        summary: uploaded.summary,
+      });
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "upload failed";
+      res.status(503).json({ success: false, message: msg });
+    }
   });
 }
 
