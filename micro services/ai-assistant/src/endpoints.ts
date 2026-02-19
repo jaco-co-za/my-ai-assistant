@@ -14,6 +14,9 @@ import { listDynamicIntents } from "./dynamicIntents.js";
 const DEFAULT_FILE_UPLOAD_URL = "http://localhost:3224/file/upload";
 const DEFAULT_WHATSAPP_MESSAGE_URL = "http://localhost:8085/message";
 const DEFAULT_UI_UPLOAD_CALLBACK_PATH = "/file/upload-status";
+const FILE_UPLOAD_TIMEOUT_MS = Number(process.env.FILE_UPLOAD_TIMEOUT_MS ?? "") > 0
+  ? Number(process.env.FILE_UPLOAD_TIMEOUT_MS)
+  : 120_000;
 
 function resolveFileUploadUrl(raw?: string): string {
   const candidate = (raw ?? "").trim();
@@ -172,24 +175,37 @@ async function uploadToFileService(args: {
 }): Promise<{ fileId: number | null; key: string | null; summary: string | null }> {
   const url = resolveFileUploadUrl(process.env.FILE_MICRO_SERVICE_URL);
   const token = normalizeBearer(process.env.FILE_MICRO_SERVICE_AUTH ?? process.env.WEBHOOK_BEARER_TOKEN ?? "");
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify({
-      source: args.source,
-      source_sender: args.sourceSender,
-      source_message_id: args.sourceMessageId || null,
-      caption: args.caption || null,
-      filename: args.filename,
-      content_type: args.mimeType || "application/octet-stream",
-      data_base64: args.base64,
-      callback_url: args.callbackUrl || null,
-      callback_authorization: args.callbackAuthorization || null,
-    }),
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FILE_UPLOAD_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({
+        source: args.source,
+        source_sender: args.sourceSender,
+        source_message_id: args.sourceMessageId || null,
+        caption: args.caption || null,
+        filename: args.filename,
+        content_type: args.mimeType || "application/octet-stream",
+        data_base64: args.base64,
+        callback_url: args.callbackUrl || null,
+        callback_authorization: args.callbackAuthorization || null,
+      }),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error(`file upload timed out after ${FILE_UPLOAD_TIMEOUT_MS}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
   const text = await response.text();
   if (!response.ok) {
     throw new Error(`file upload failed (${response.status}): ${text.slice(0, 240)}`);
@@ -424,6 +440,10 @@ export function registerEndpoints(
       return;
     }
     try {
+      console.log(
+        `[ui-upload] start filename=${filename} mime=${mimeType || "application/octet-stream"} bytes(base64)=${dataBase64.length}`,
+      );
+      broadcastEvent("upload", `starting upload: ${filename}`);
       const webhookToken = normalizeBearer(process.env.WEBHOOK_BEARER_TOKEN ?? "");
       const uploaded = await uploadToFileService({
         source: "ui",
@@ -436,6 +456,10 @@ export function registerEndpoints(
         callbackUrl: resolveUiUploadCallbackUrl(),
         callbackAuthorization: webhookToken ? `Bearer ${webhookToken}` : "",
       });
+      console.log(
+        `[ui-upload] success filename=${filename} fileId=${uploaded.fileId ?? "unknown"} key=${uploaded.key ?? "unknown"} summary=${uploaded.summary ? "yes" : "no"}`,
+      );
+      broadcastEvent("upload", `${filename} uploaded (id ${uploaded.fileId ?? "unknown"})`);
       res.status(201).json({
         success: true,
         file_id: uploaded.fileId,
@@ -444,6 +468,8 @@ export function registerEndpoints(
       });
     } catch (error) {
       const msg = error instanceof Error ? error.message : "upload failed";
+      console.warn(`[ui-upload] failed filename=${filename} error=${msg}`);
+      broadcastEvent("upload", `${filename} upload failed: ${msg}`);
       res.status(503).json({ success: false, message: msg });
     }
   });

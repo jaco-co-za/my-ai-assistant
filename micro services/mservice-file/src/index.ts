@@ -21,6 +21,16 @@ dotenv.config();
 
 const app = express();
 app.use(express.json({ limit: '100mb' }));
+app.use((req, res, next) => {
+  const startedAt = Date.now();
+  // eslint-disable-next-line no-console
+  console.log(`[mservice-file][req] ${req.method} ${req.originalUrl} ip=${req.ip}`);
+  res.on('finish', () => {
+    // eslint-disable-next-line no-console
+    console.log(`[mservice-file][res] ${req.method} ${req.originalUrl} ${res.statusCode} ${Date.now() - startedAt}ms`);
+  });
+  next();
+});
 
 const PORT = Number.parseInt(process.env.PORT || '3224', 10);
 const SKIP_AUTH = String(process.env.SKIP_AUTH || 'false').toLowerCase() === 'true';
@@ -31,6 +41,7 @@ const PDF_DEFAULT_PASSWORD = process.env.PDF_DEFAULT_PASSWORD || '7609085080084'
 const ASSISTANT_URL = (process.env.ASSISTANT_URL || '').trim();
 const ASSISTANT_AUTH = (process.env.ASSISTANT_AUTH ?? process.env.AUTH ?? '').trim().replace(/^Bearer\s+/i, '');
 const ASSISTANT_MODEL = (process.env.ASSISTANT_MODEL || 'qwen2.5:14b').trim();
+const IMAGE_SUMMARY_MODEL = (process.env.IMAGE_SUMMARY_MODEL || 'qwen2.5vl:3b').trim();
 const FILE_SQL_MODEL = (process.env.FILE_SQL_MODEL || 'qwen2.5-coder:14b').trim();
 const ASSISTANT_TIMEOUT_MS = Number.parseInt(process.env.ASSISTANT_TIMEOUT_MS || '120000', 10);
 const FILE_SUMMARY_TEXT_LIMIT = Number.parseInt(process.env.FILE_SUMMARY_TEXT_LIMIT || '12000', 10);
@@ -145,6 +156,20 @@ function isWordAttachment(contentType: string, filename: string): boolean {
   );
 }
 
+function isImageAttachment(contentType: string, filename: string): boolean {
+  const type = String(contentType || '').toLowerCase();
+  const name = String(filename || '').toLowerCase();
+  return (
+    type.startsWith('image/') ||
+    name.endsWith('.png') ||
+    name.endsWith('.jpg') ||
+    name.endsWith('.jpeg') ||
+    name.endsWith('.gif') ||
+    name.endsWith('.webp') ||
+    name.endsWith('.bmp')
+  );
+}
+
 function isWhatsappChatId(value: string): boolean {
   const normalized = String(value || '').trim().toLowerCase();
   if (!normalized) {
@@ -242,7 +267,10 @@ async function extractWordTextFromBuffer(buffer: Buffer): Promise<string> {
   return normalizeWhitespace(result.value || '');
 }
 
-async function sendSummaryRequestToAssistant(payload: Record<string, unknown>): Promise<string | null> {
+async function sendSummaryRequestToAssistant(
+  payload: Record<string, unknown>,
+  options?: { model?: string; imageBase64?: string },
+): Promise<string | null> {
   if (!ASSISTANT_URL) {
     return null;
   }
@@ -253,24 +281,30 @@ async function sendSummaryRequestToAssistant(payload: Record<string, unknown>): 
     Number.isFinite(ASSISTANT_TIMEOUT_MS) && ASSISTANT_TIMEOUT_MS > 0 ? ASSISTANT_TIMEOUT_MS : 120000;
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
+    const userLines = [
+      'Create a concise summary for the uploaded file.',
+      'Use extracted text when available, else use filename/content type/caption.',
+      'For images, infer key visible details directly from the image.',
+      'Do not include labels and return summary text only.',
+      `Payload: ${JSON.stringify(payload)}`,
+    ];
+    const userMessage: Record<string, unknown> = {
+      role: 'user',
+      content: userLines.join('\n'),
+    };
+    if (options?.imageBase64) {
+      userMessage.images = [options.imageBase64];
+    }
     const messagePayload = {
       Authorization: ASSISTANT_AUTH,
       authorization: ASSISTANT_AUTH,
-      model: ASSISTANT_MODEL,
+      model: options?.model || ASSISTANT_MODEL,
       messages: [
         {
           role: 'system',
           content: 'You summarize files. Return ONLY valid JSON: {"ai_summary":"..."}',
         },
-        {
-          role: 'user',
-          content: [
-            'Create a concise summary for the uploaded file.',
-            'Use extracted text when available, else use filename/content type/caption.',
-            'Do not include labels and return summary text only.',
-            `Payload: ${JSON.stringify(payload)}`,
-          ].join('\n'),
-        },
+        userMessage,
       ],
       temperature: 0.2,
       stream: false,
@@ -766,18 +800,28 @@ async function runPdfSummaryPipeline(args: {
   let summary: string | null = null;
   let summaryRawResponse = '';
   let summaryError = '';
+  let summaryModel = ASSISTANT_MODEL;
+  let extractor: string | null = null;
   try {
     const isPdf = isPdfAttachment(args.contentType, args.filename);
     const isWord = isWordAttachment(args.contentType, args.filename);
-    if (!isPdf && !isWord) {
+    const isImage = isImageAttachment(args.contentType, args.filename);
+    if (!isPdf && !isWord && !isImage) {
       throw new Error('Unsupported extractable file type');
     }
     if (isPdf) {
       extractedPdfText = normalizeWhitespace(await extractPdfTextFromBuffer(args.content));
+      extractor = 'pdf2json';
     } else {
-      extractedPdfText = normalizeWhitespace(await extractWordTextFromBuffer(args.content));
+      if (isWord) {
+        extractedPdfText = normalizeWhitespace(await extractWordTextFromBuffer(args.content));
+        extractor = 'mammoth';
+      } else {
+        summaryModel = IMAGE_SUMMARY_MODEL;
+        extractor = 'vision';
+      }
     }
-    if (!extractedPdfText) {
+    if (!isImage && !extractedPdfText) {
       throw new Error(isPdf ? 'No readable text extracted from PDF' : 'No readable text extracted from Word document');
     }
     if (!ASSISTANT_URL) {
@@ -791,9 +835,12 @@ async function runPdfSummaryPipeline(args: {
       content_type: args.contentType || '',
       size_bytes: args.content.length,
       caption: args.caption || '',
-      extracted_text: trimForSummary(extractedPdfText, FILE_SUMMARY_TEXT_LIMIT),
+      extracted_text: isImage ? '' : trimForSummary(extractedPdfText, FILE_SUMMARY_TEXT_LIMIT),
     };
-    const raw = await sendSummaryRequestToAssistant(summaryPayload);
+    const raw = await sendSummaryRequestToAssistant(summaryPayload, {
+      model: summaryModel,
+      imageBase64: isImage ? args.content.toString('base64') : undefined,
+    });
     if (!raw) {
       throw new Error('Summary service returned an empty response');
     }
@@ -831,9 +878,9 @@ async function runPdfSummaryPipeline(args: {
        WHERE id = ?;`,
       extractedPdfText,
       extractedPdfText.length,
-      isPdf ? 'pdf2json' : 'mammoth',
+      extractor,
       summary,
-      ASSISTANT_MODEL,
+      summaryModel,
       summaryRawResponse || null,
       JSON.stringify({ ...args.baseMetadata, summary: safeSummarySnippet(summary, 512) }),
       args.fileId,
@@ -855,9 +902,9 @@ async function runPdfSummaryPipeline(args: {
        WHERE id = ?;`,
       extractedPdfText || null,
       extractedPdfText.length,
-      extractedPdfText ? (isPdfAttachment(args.contentType, args.filename) ? 'pdf2json' : 'mammoth') : null,
+      extractedPdfText ? extractor : null,
       summaryError,
-      ASSISTANT_MODEL,
+      summaryModel,
       summaryRawResponse || null,
       JSON.stringify(args.baseMetadata),
       args.fileId,
@@ -933,6 +980,10 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
     const dataBase64 = dataBase64Raw.startsWith('data:') && dataBase64Raw.includes(',')
       ? dataBase64Raw.split(',').pop() || ''
       : dataBase64Raw;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[mservice-file][upload] start source=${source || 'unknown'} sender=${sourceSender || 'unknown'} filename=${filename || 'file.bin'} mime=${contentType || 'application/octet-stream'} bytes(base64)=${dataBase64.length}`,
+    );
 
     if (!dataBase64) {
       res.status(400).json({ success: false, message: 'data_base64 is required' });
@@ -988,7 +1039,8 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
       }),
     );
 
-    const shouldProcessPdfSummary = isPdfAttachment(contentType, filename) || isWordAttachment(contentType, filename);
+    const shouldProcessPdfSummary =
+      isPdfAttachment(contentType, filename) || isWordAttachment(contentType, filename) || isImageAttachment(contentType, filename);
     const initialSummaryStatus: SummaryStatus =
       shouldProcessPdfSummary && ASSISTANT_URL ? 'pending' : 'skipped';
 
@@ -1058,6 +1110,10 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
 
     const record = await dbGet('SELECT * FROM files WHERE s3_key = ? LIMIT 1;', key);
     const fileId = Number(record?.id || 0) || null;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[mservice-file][upload] stored fileId=${fileId ?? 'unknown'} key=${key} summary_status=${initialSummaryStatus}`,
+    );
     res.status(201).json({
       success: true,
       bucket,
@@ -1090,6 +1146,8 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
       });
     }
   } catch (err: any) {
+    // eslint-disable-next-line no-console
+    console.error(`[mservice-file][upload] failed ${String(err?.message || 'upload failed')}`);
     res.status(500).json({ success: false, message: err?.message || 'upload failed' });
   }
 });

@@ -991,6 +991,7 @@
           let uploadModeEnabled = false;
           let uploadInProgress = false;
           const uploadQueue = [];
+          const uploadRequestTimeoutMs = 120000;
           const eventsToggleStorageKey = "ai-assistant-events-visible";
 
           if (!showSendNoCacheButton && sendNoCacheButton) {
@@ -1180,16 +1181,31 @@
                 const file = entry.file;
                 try {
                   const base64 = await fileToBase64(file);
-                  const response = await fetch("/upload-file", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                      filename: file.name,
-                      mimeType: file.type || "application/octet-stream",
-                      dataBase64: base64,
-                      caption,
-                    }),
-                  });
+                  const controller = new AbortController();
+                  const timeout = setTimeout(function () {
+                    controller.abort();
+                  }, uploadRequestTimeoutMs);
+                  let response;
+                  try {
+                    response = await fetch("/upload-file", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        filename: file.name,
+                        mimeType: file.type || "application/octet-stream",
+                        dataBase64: base64,
+                        caption,
+                      }),
+                      signal: controller.signal,
+                    });
+                  } catch (error) {
+                    if (error && error.name === "AbortError") {
+                      throw new Error(`upload timed out after ${uploadRequestTimeoutMs}ms`);
+                    }
+                    throw error;
+                  } finally {
+                    clearTimeout(timeout);
+                  }
                   const payload = await response.json().catch(function () {
                     return {};
                   });

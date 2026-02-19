@@ -35,6 +35,14 @@ const queuePort = 8599;
 ui.use(express.urlencoded({ extended: false }));
 ui.use(express.json({ limit: bodyLimit }));
 ui.use("/assets", express.static("node_modules/bootstrap/dist/css"));
+ui.use((req, _res, next) => {
+  const startedAt = Date.now();
+  console.log(`[ui-req] ${req.method} ${req.originalUrl} ip=${req.ip}`);
+  _res.on("finish", () => {
+    console.log(`[ui-res] ${req.method} ${req.originalUrl} ${_res.statusCode} ${Date.now() - startedAt}ms`);
+  });
+  next();
+});
 
 app.use(express.json({ limit: bodyLimit }));
 app.use(express.urlencoded({ extended: true, limit: bodyLimit }));
