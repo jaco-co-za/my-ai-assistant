@@ -14,6 +14,7 @@ import { listDynamicIntents } from "./dynamicIntents.js";
 const DEFAULT_FILE_UPLOAD_URL = "http://localhost:3224/file/upload";
 const DEFAULT_WHATSAPP_MESSAGE_URL = "http://localhost:8085/message";
 const DEFAULT_UI_UPLOAD_CALLBACK_PATH = "/file/upload-status";
+const DEFAULT_FILE_OWNER = "me";
 const FILE_UPLOAD_TIMEOUT_MS = Number(process.env.FILE_UPLOAD_TIMEOUT_MS ?? "") > 0
   ? Number(process.env.FILE_UPLOAD_TIMEOUT_MS)
   : 120_000;
@@ -32,6 +33,54 @@ function resolveFileUploadUrl(raw?: string): string {
 
 function normalizeBearer(raw?: string): string {
   return String(raw ?? "").trim().replace(/^Bearer\s+/i, "");
+}
+
+function sanitizeLogValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeLogValue(item));
+  }
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+      const keyLower = key.toLowerCase();
+      if (keyLower === "base64" || keyLower === "data_base64") {
+        const len = typeof raw === "string" ? raw.length : 0;
+        out[key] = `[omitted base64 len=${len}]`;
+        continue;
+      }
+      if (keyLower === "images" && Array.isArray(raw)) {
+        out[key] = `[omitted images count=${raw.length}]`;
+        continue;
+      }
+      out[key] = sanitizeLogValue(raw);
+    }
+    return out;
+  }
+  if (typeof value === "string" && value.length > 1200) {
+    return `${value.slice(0, 1200)}...[truncated ${value.length - 1200} chars]`;
+  }
+  return value;
+}
+
+function sanitizeMessageForLog(message: string): string {
+  const raw = String(message || "");
+  if (!raw) {
+    return raw;
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return JSON.stringify(sanitizeLogValue(parsed));
+  } catch {
+    return raw.length > 1200 ? `${raw.slice(0, 1200)}...[truncated ${raw.length - 1200} chars]` : raw;
+  }
+}
+
+function normalizeFileOwner(raw?: string): string {
+  const value = String(raw ?? "").trim().toLowerCase();
+  if (!value) {
+    return DEFAULT_FILE_OWNER;
+  }
+  return value.includes("sonja") ? "sonja" : DEFAULT_FILE_OWNER;
 }
 
 function isWhatsappInbound(from: string): boolean {
@@ -163,6 +212,7 @@ function resolveUiUploadCallbackUrl(): string {
 }
 
 async function uploadToFileService(args: {
+  owner?: string;
   source: string;
   sourceSender: string;
   sourceMessageId: string;
@@ -172,7 +222,7 @@ async function uploadToFileService(args: {
   base64: string;
   callbackUrl?: string;
   callbackAuthorization?: string;
-}): Promise<{ fileId: number | null; key: string | null; summary: string | null }> {
+}): Promise<{ fileId: number | null; key: string | null; summary: string | null; summaryStatus: string | null }> {
   const url = resolveFileUploadUrl(process.env.FILE_MICRO_SERVICE_URL);
   const token = normalizeBearer(process.env.FILE_MICRO_SERVICE_AUTH ?? process.env.WEBHOOK_BEARER_TOKEN ?? "");
   const controller = new AbortController();
@@ -186,6 +236,8 @@ async function uploadToFileService(args: {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify({
+        owner: normalizeFileOwner(args.owner),
+        source_owner: normalizeFileOwner(args.owner),
         source: args.source,
         source_sender: args.sourceSender,
         source_message_id: args.sourceMessageId || null,
@@ -220,6 +272,10 @@ async function uploadToFileService(args: {
     fileId: Number.isFinite(Number(parsed?.file_id)) ? Number(parsed.file_id) : null,
     key: typeof parsed?.key === "string" && parsed.key.trim().length > 0 ? parsed.key.trim() : null,
     summary: typeof parsed?.summary === "string" && parsed.summary.trim().length > 0 ? parsed.summary.trim() : null,
+    summaryStatus:
+      typeof parsed?.summary_status === "string" && parsed.summary_status.trim().length > 0
+        ? parsed.summary_status.trim().toLowerCase()
+        : null,
   };
 }
 
@@ -295,6 +351,7 @@ export function registerEndpoints(
       try {
         const inferredFilename = inferFilename(body, bodyMimeType, bodyMessageId);
         const uploaded = await uploadToFileService({
+          owner: "me",
           source: "whatsapp",
           sourceSender: from,
           sourceMessageId: bodyMessageId,
@@ -341,6 +398,10 @@ export function registerEndpoints(
 
     if (!from || !message) {
       if (uploadedNonAudioWhatsappMedia && from && !message) {
+        const storedName = inferFilename(body, bodyMimeType, bodyMessageId);
+        const idPart = uploadedFileId && uploadedFileId > 0 ? ` (ID ${uploadedFileId})` : "";
+        const notice = `File stored${idPart}: ${storedName}. Summary is processing.`;
+        await sendWhatsappStoredPdfNotice(from, notice).catch(() => {});
         res.status(200).json({ success: true, code: 200, msg: "" });
         return;
       }
@@ -378,15 +439,16 @@ export function registerEndpoints(
       const lid = from.trim();
       console.log(`[whatsapp-lid] inbound lid=${lid}`);
     }
+    const loggedMessage = sanitizeMessageForLog(message);
     console.log(
-      `[inbound] from=${from} replyId=${replyId ?? "none"} message=${message}`,
+      `[inbound] from=${from} replyId=${replyId ?? "none"} message=${loggedMessage}`,
     );
     console.log(
       `[inbound-body] ${JSON.stringify({
         from,
-        message,
+        message: loggedMessage,
         replyId: replyId ?? null,
-        meta: typeof body.meta === "object" && body.meta ? body.meta : undefined,
+        meta: sanitizeLogValue(typeof body.meta === "object" && body.meta ? body.meta : undefined),
       })}`,
     );
 
@@ -431,6 +493,7 @@ export function registerEndpoints(
   });
 
   ui.post("/upload-file", async (req, res) => {
+    const owner = normalizeFileOwner(typeof req.body?.owner === "string" ? req.body.owner : "");
     const filename = typeof req.body?.filename === "string" ? req.body.filename.trim() : "";
     const mimeType = typeof req.body?.mimeType === "string" ? req.body.mimeType.trim() : "";
     const dataBase64 = typeof req.body?.dataBase64 === "string" ? req.body.dataBase64.trim() : "";
@@ -441,13 +504,14 @@ export function registerEndpoints(
     }
     try {
       console.log(
-        `[ui-upload] start filename=${filename} mime=${mimeType || "application/octet-stream"} bytes(base64)=${dataBase64.length}`,
+        `[ui-upload] start owner=${owner} filename=${filename} mime=${mimeType || "application/octet-stream"} bytes(base64)=${dataBase64.length}`,
       );
-      broadcastEvent("upload", `starting upload: ${filename}`);
+      broadcastEvent("upload", `starting upload (${owner}): ${filename}`);
       const webhookToken = normalizeBearer(process.env.WEBHOOK_BEARER_TOKEN ?? "");
       const uploaded = await uploadToFileService({
+        owner,
         source: "ui",
-        sourceSender: "queue-ui",
+        sourceSender: owner === "sonja" ? "queue-ui-sonja" : "queue-ui",
         sourceMessageId: "",
         caption,
         mimeType: mimeType || "application/octet-stream",
@@ -457,9 +521,9 @@ export function registerEndpoints(
         callbackAuthorization: webhookToken ? `Bearer ${webhookToken}` : "",
       });
       console.log(
-        `[ui-upload] success filename=${filename} fileId=${uploaded.fileId ?? "unknown"} key=${uploaded.key ?? "unknown"} summary=${uploaded.summary ? "yes" : "no"}`,
+        `[ui-upload] success owner=${owner} filename=${filename} fileId=${uploaded.fileId ?? "unknown"} key=${uploaded.key ?? "unknown"} summary_status=${uploaded.summaryStatus ?? "pending"}`,
       );
-      broadcastEvent("upload", `${filename} uploaded (id ${uploaded.fileId ?? "unknown"})`);
+      broadcastEvent("upload", `${owner}: ${filename} uploaded (id ${uploaded.fileId ?? "unknown"})`);
       res.status(201).json({
         success: true,
         file_id: uploaded.fileId,
@@ -468,8 +532,8 @@ export function registerEndpoints(
       });
     } catch (error) {
       const msg = error instanceof Error ? error.message : "upload failed";
-      console.warn(`[ui-upload] failed filename=${filename} error=${msg}`);
-      broadcastEvent("upload", `${filename} upload failed: ${msg}`);
+      console.warn(`[ui-upload] failed owner=${owner} filename=${filename} error=${msg}`);
+      broadcastEvent("upload", `${owner}: ${filename} upload failed: ${msg}`);
       res.status(503).json({ success: false, message: msg });
     }
   });

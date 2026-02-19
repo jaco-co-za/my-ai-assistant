@@ -793,7 +793,8 @@
               <button type="button" class="shortcut-button" id="remindMeShortcut">Remind Me</button>
               <button type="button" class="shortcut-button" id="homeAssistantShortcut">Home Assistant</button>
               <button type="button" class="shortcut-button" id="showScheduleShortcut">Show My Scheduler</button>
-              <button type="button" class="shortcut-button" id="uploadFilesShortcut">Upload Files</button>
+              <button type="button" class="shortcut-button" id="uploadFilesShortcut">Upload My Files</button>
+              <button type="button" class="shortcut-button" id="uploadFilesSonjaShortcut">Upload Sonja Files</button>
               <div class="oauth-callback-panel" id="oauthCallbackPanel">
                 <div class="label">Codex Callback URL</div>
                 <textarea
@@ -938,6 +939,7 @@
           const homeAssistantShortcut = document.getElementById("homeAssistantShortcut");
           const showScheduleShortcut = document.getElementById("showScheduleShortcut");
           const uploadFilesShortcut = document.getElementById("uploadFilesShortcut");
+          const uploadFilesSonjaShortcut = document.getElementById("uploadFilesSonjaShortcut");
           const codexLoginShortcut = document.getElementById("codexLoginShortcut");
           const oauthCallbackPanel = document.getElementById("oauthCallbackPanel");
           const oauthCallbackInput = document.getElementById("oauthCallbackInput");
@@ -990,6 +992,7 @@
           let showEventsEnabled = false;
           let uploadModeEnabled = false;
           let uploadInProgress = false;
+          let uploadOwner = "me";
           const uploadQueue = [];
           const uploadRequestTimeoutMs = 120000;
           const eventsToggleStorageKey = "ai-assistant-events-visible";
@@ -1120,8 +1123,11 @@
             });
           }
 
-          function setUploadMode(active) {
+          function setUploadMode(active, owner) {
             uploadModeEnabled = Boolean(active);
+            if (uploadModeEnabled) {
+              uploadOwner = owner === "sonja" ? "sonja" : "me";
+            }
             uploadPanel.classList.toggle("active", uploadModeEnabled);
             textarea.style.display = uploadModeEnabled ? "none" : "block";
             sendNoCacheButton.style.display = uploadModeEnabled ? "none" : (showSendNoCacheButton ? "block" : "none");
@@ -1129,7 +1135,7 @@
             if (uploadModeEnabled) {
               textarea.value = "";
               renderUploadQueue();
-              pushEvent("shortcut", "Upload Files");
+              pushEvent("shortcut", uploadOwner === "sonja" ? "Upload Sonja Files" : "Upload My Files");
             }
           }
 
@@ -1191,6 +1197,7 @@
                       method: "POST",
                       headers: { "Content-Type": "application/json" },
                       body: JSON.stringify({
+                        owner: uploadOwner,
                         filename: file.name,
                         mimeType: file.type || "application/octet-stream",
                         dataBase64: base64,
@@ -1212,16 +1219,16 @@
                   if (!response.ok || !payload.success) {
                     const reason = payload && payload.message ? payload.message : `HTTP ${response.status}`;
                     failed.push(`${file.name}: ${reason}`);
-                    pushEvent("upload", `${file.name} failed (${reason})`);
+                    pushEvent("upload", `${uploadOwner}: ${file.name} failed (${reason})`);
                     continue;
                   }
                   const fileId = payload.file_id ? String(payload.file_id) : "unknown";
                   succeeded.push(`${file.name} (id ${fileId})`);
-                  pushEvent("upload", `${file.name} queued successfully (id ${fileId})`);
+                  pushEvent("upload", `${uploadOwner}: ${file.name} queued successfully (id ${fileId})`);
                 } catch (error) {
                   const reason = error instanceof Error ? error.message : "upload failed";
                   failed.push(`${file.name}: ${reason}`);
-                  pushEvent("upload", `${file.name} failed (${reason})`);
+                  pushEvent("upload", `${uploadOwner}: ${file.name} failed (${reason})`);
                 }
               }
             } finally {
@@ -1247,7 +1254,7 @@
               lines.push("No files were uploaded.");
             }
             clearResult();
-            promptValue.textContent = `upload files (${uploadQueue.length})`;
+            promptValue.textContent = `upload ${uploadOwner} files (${uploadQueue.length})`;
             replyValue.textContent = lines.join("\n");
             pushReplyHistoryEntry({
               prompt: promptValue.textContent,
@@ -3702,7 +3709,11 @@
           });
 
           uploadFilesShortcut.addEventListener("click", function () {
-            setUploadMode(!uploadModeEnabled);
+            setUploadMode(!uploadModeEnabled || uploadOwner !== "me", "me");
+          });
+
+          uploadFilesSonjaShortcut.addEventListener("click", function () {
+            setUploadMode(!uploadModeEnabled || uploadOwner !== "sonja", "sonja");
           });
 
           uploadBrowseButton.addEventListener("click", function () {

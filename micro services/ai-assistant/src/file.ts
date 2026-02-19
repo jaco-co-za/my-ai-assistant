@@ -44,6 +44,10 @@ function normalizeWhatsappChatId(from: string): string {
   return (from || "").trim();
 }
 
+function resolveQueryOwner(message: string): "me" | "sonja" {
+  return /\bsonja\b/i.test(message) ? "sonja" : "me";
+}
+
 function normalizeAttachments(value: unknown): NonNullable<BrokerResult["attachments"]> | undefined {
   if (!Array.isArray(value)) {
     return undefined;
@@ -143,11 +147,14 @@ export async function handleFile(
   options?: { skipCache?: boolean },
 ): Promise<BrokerResult> {
   const skipCache = Boolean(options?.skipCache);
+  const owner = resolveQueryOwner(message);
   const intent = await intentClassifier(message, "file", { skipCache });
   const verbLabel = intent.verb ? ` | Verb: ${intent.verb}` : "";
   const llmResult = `Class: file | Intent: ${intent.intent || "query"}${verbLabel}`;
   const sourceChannel = isWhatsappSender(from) ? "whatsapp" : from;
   const payload = {
+    owner,
+    query_owner: owner,
     prompt: message,
     result: llmResult,
     source_channel: sourceChannel,

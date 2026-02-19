@@ -36,14 +36,23 @@ const PORT = Number.parseInt(process.env.PORT || '3224', 10);
 const SKIP_AUTH = String(process.env.SKIP_AUTH || 'false').toLowerCase() === 'true';
 const AUTH_BEARER_TOKEN = process.env.AUTH_BEARER_TOKEN || '';
 const DB_PATH = process.env.DB_PATH || './data/files.db';
+const DEFAULT_OWNER = 'me';
+const SONJA_OWNER = 'sonja';
+const DB_PATH_ME = process.env.DB_PATH_ME || DB_PATH;
+const DB_PATH_SONJA = process.env.DB_PATH_SONJA || DB_PATH.replace(/\.db$/i, '.sonja.db');
 const FILE_KEY_PREFIX = (process.env.FILE_KEY_PREFIX || 'uploads').replace(/^\/+|\/+$/g, '');
 const PDF_DEFAULT_PASSWORD = process.env.PDF_DEFAULT_PASSWORD || '7609085080084';
+const PDF_KNOWN_PASSWORDS_ENV = (process.env.PDF_KNOWN_PASSWORDS || '').trim();
 const ASSISTANT_URL = (process.env.ASSISTANT_URL || '').trim();
 const ASSISTANT_AUTH = (process.env.ASSISTANT_AUTH ?? process.env.AUTH ?? '').trim().replace(/^Bearer\s+/i, '');
 const ASSISTANT_MODEL = (process.env.ASSISTANT_MODEL || 'qwen2.5:14b').trim();
 const IMAGE_SUMMARY_MODEL = (process.env.IMAGE_SUMMARY_MODEL || 'qwen2.5vl:3b').trim();
+const IMAGE_SUMMARY_FALLBACK_MODEL = (process.env.IMAGE_SUMMARY_FALLBACK_MODEL || 'qwen2.5vl:7b').trim();
 const FILE_SQL_MODEL = (process.env.FILE_SQL_MODEL || 'qwen2.5-coder:14b').trim();
+const FILE_SQL_MAX_ROWS = Number.parseInt(process.env.FILE_SQL_MAX_ROWS || '50', 10);
 const ASSISTANT_TIMEOUT_MS = Number.parseInt(process.env.ASSISTANT_TIMEOUT_MS || '120000', 10);
+const FILE_EXTRACTION_TIMEOUT_MS = Number.parseInt(process.env.FILE_EXTRACTION_TIMEOUT_MS || '120000', 10);
+const S3_OPERATION_TIMEOUT_MS = Number.parseInt(process.env.S3_OPERATION_TIMEOUT_MS || '60000', 10);
 const FILE_SUMMARY_TEXT_LIMIT = Number.parseInt(process.env.FILE_SUMMARY_TEXT_LIMIT || '12000', 10);
 const WHATSAPP_MESSAGE_URL = (process.env.WHATSAPP_MESSAGE_URL || '').trim();
 const WHATSAPP_MESSAGE_AUTH = (process.env.WHATSAPP_MESSAGE_AUTH || '').trim();
@@ -53,6 +62,7 @@ const S3_REGION = process.env.S3_REGION || 'us-east-1';
 const S3_ACCESS_KEY = process.env.S3_ACCESS_KEY || 'aiassist';
 const S3_SECRET_KEY = process.env.S3_SECRET_KEY || 'MASEHARRE@123';
 const S3_DEFAULT_BUCKET = process.env.S3_DEFAULT_BUCKET || 'files';
+const S3_DEFAULT_BUCKET_SONJA = process.env.S3_DEFAULT_BUCKET_SONJA || `${S3_DEFAULT_BUCKET}-sonja`;
 const S3_FORCE_PATH_STYLE = String(process.env.S3_FORCE_PATH_STYLE || 'true').toLowerCase() === 'true';
 const S3_BROWSER_BASE_URL = (process.env.S3_BROWSER_BASE_URL || 'http://192.168.55.113:9001').trim();
 const FILE_DEDUP_ENABLED = String(process.env.FILE_DEDUP_ENABLED || 'true').toLowerCase() !== 'false';
@@ -68,12 +78,18 @@ const s3 = new S3Client({
 });
 
 const readyBuckets = new Set<string>();
-let db: sqlite3.Database;
-let dbGet: (sql: string, ...params: unknown[]) => Promise<any>;
-let dbRun: (sql: string, ...params: unknown[]) => Promise<void>;
-let dbAll: (sql: string, ...params: unknown[]) => Promise<any[]>;
+type DbContext = {
+  owner: string;
+  path: string;
+  db: sqlite3.Database;
+  dbGet: (sql: string, ...params: unknown[]) => Promise<any>;
+  dbRun: (sql: string, ...params: unknown[]) => Promise<void>;
+  dbAll: (sql: string, ...params: unknown[]) => Promise<any[]>;
+};
+const dbContexts = new Map<string, DbContext>();
 
 type SummaryStatus = 'pending' | 'completed' | 'failed' | 'skipped';
+type ContentScope = 'business' | 'personal';
 
 type FileSqlPlan = {
   delivery: 'attach' | 'none';
@@ -84,6 +100,57 @@ type DateConstraint = {
   clause: string;
   params: string[];
 };
+
+const BUSINESS_KEYWORDS = [
+  'invoice',
+  'receipt',
+  'quote',
+  'quotation',
+  'statement',
+  'bank',
+  'contract',
+  'agreement',
+  'proposal',
+  'purchase order',
+  'order',
+  'shipping',
+  'delivery note',
+  'tax',
+  'vat',
+  'company',
+  'client',
+  'customer',
+  'project',
+  'meeting',
+  'report',
+  'timesheet',
+  'payslip',
+  'cv',
+  'resume',
+];
+
+const PERSONAL_KEYWORDS = [
+  'selfie',
+  'family',
+  'holiday',
+  'vacation',
+  'birthday',
+  'wedding',
+  'baby',
+  'kids',
+  'husband',
+  'wife',
+  'friend',
+  'pet',
+  'dog',
+  'cat',
+  'beach',
+  'party',
+  'picnic',
+  'anniversary',
+  'portrait',
+  'instagram',
+];
 
 function authMiddleware(req: Request, res: Response, next: NextFunction) {
   if (SKIP_AUTH) {
@@ -99,9 +166,25 @@ function authMiddleware(req: Request, res: Response, next: NextFunction) {
   next();
 }
 
-function resolveBucket(value?: unknown): string {
+function normalizeOwner(value: unknown): string {
+  const raw = String(value ?? '').trim().toLowerCase();
+  if (!raw) {
+    return DEFAULT_OWNER;
+  }
+  return raw.includes(SONJA_OWNER) ? SONJA_OWNER : DEFAULT_OWNER;
+}
+
+function resolveDbPath(owner: string): string {
+  return normalizeOwner(owner) === SONJA_OWNER ? DB_PATH_SONJA : DB_PATH_ME;
+}
+
+function resolveDefaultBucketForOwner(owner: string): string {
+  return normalizeOwner(owner) === SONJA_OWNER ? S3_DEFAULT_BUCKET_SONJA : S3_DEFAULT_BUCKET;
+}
+
+function resolveBucket(value?: unknown, owner: string = DEFAULT_OWNER): string {
   const bucket = typeof value === 'string' ? value.trim() : '';
-  return bucket || S3_DEFAULT_BUCKET;
+  return bucket || resolveDefaultBucketForOwner(owner);
 }
 
 function normalizeWhitespace(value: string): string {
@@ -170,6 +253,67 @@ function isImageAttachment(contentType: string, filename: string): boolean {
   );
 }
 
+function normalizeContentScope(value: unknown): ContentScope {
+  const raw = String(value ?? '').trim().toLowerCase();
+  return raw === 'personal' ? 'personal' : 'business';
+}
+
+function keywordScore(text: string, keywords: string[]): number {
+  const normalized = String(text || '').toLowerCase();
+  if (!normalized) {
+    return 0;
+  }
+  let score = 0;
+  for (const keyword of keywords) {
+    if (normalized.includes(keyword)) {
+      score += 1;
+    }
+  }
+  return score;
+}
+
+function inferContentScope(args: {
+  contentType?: string;
+  filename?: string;
+  caption?: string;
+  summary?: string | null;
+  extractedText?: string;
+  requestedScope?: unknown;
+}): ContentScope {
+  const requested = String(args.requestedScope ?? '').trim().toLowerCase();
+  if (requested === 'business' || requested === 'personal') {
+    return requested as ContentScope;
+  }
+
+  const contentType = String(args.contentType || '');
+  const filename = String(args.filename || '');
+  const combinedText = [
+    filename,
+    args.caption || '',
+    args.summary || '',
+    args.extractedText || '',
+  ]
+    .join(' ')
+    .toLowerCase();
+
+  const businessScore = keywordScore(combinedText, BUSINESS_KEYWORDS);
+  const personalScore = keywordScore(combinedText, PERSONAL_KEYWORDS);
+  const isImage = isImageAttachment(contentType, filename);
+
+  if (businessScore > personalScore) {
+    return 'business';
+  }
+  if (personalScore > businessScore) {
+    return 'personal';
+  }
+
+  // Default image uploads to personal unless business intent is explicit.
+  if (isImage) {
+    return businessScore > 0 ? 'business' : 'personal';
+  }
+  return 'business';
+}
+
 function isWhatsappChatId(value: string): boolean {
   const normalized = String(value || '').trim().toLowerCase();
   if (!normalized) {
@@ -183,6 +327,28 @@ function isPdfPasswordError(err: unknown): boolean {
   return message.includes('password') || message.includes('encrypted');
 }
 
+function getKnownPdfPasswords(): string[] {
+  const builtIn = ['7609085080084', '7509280043087'];
+  const fromEnv = PDF_KNOWN_PASSWORDS_ENV
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  const merged = [
+    PDF_DEFAULT_PASSWORD.trim(),
+    ...fromEnv,
+    ...builtIn,
+  ].filter((entry) => entry.length > 0);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of merged) {
+    if (!seen.has(value)) {
+      seen.add(value);
+      out.push(value);
+    }
+  }
+  return out;
+}
+
 function trimForSummary(value: string, maxChars: number): string {
   if (!value) {
     return '';
@@ -194,6 +360,39 @@ function trimForSummary(value: string, maxChars: number): string {
     return value;
   }
   return `${value.slice(0, Math.max(0, maxChars - 3))}...`;
+}
+
+function summaryIndicatesNoReadableText(summary: string): boolean {
+  const text = String(summary || '').toLowerCase();
+  if (!text) {
+    return false;
+  }
+  return (
+    text.includes('no text content extracted') ||
+    text.includes('no readable text extracted') ||
+    text.includes('no text extracted') ||
+    text.includes('without any textual content extracted') ||
+    text.includes('without textual content extracted') ||
+    text.includes('without any text extracted') ||
+    text.includes('without text extracted') ||
+    (text.includes('no text') && text.includes('extracted')) ||
+    text.includes('without text content') ||
+    (text.includes('without') && text.includes('textual content') && text.includes('extracted'))
+  );
+}
+
+function hasMeaningfulPdfText(text: string): boolean {
+  const normalized = String(text || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) {
+    return false;
+  }
+  const cleaned = normalized
+    .replace(/-+\s*page\s*\(\s*\d+\s*\)\s*break\s*-+/gi, '')
+    .replace(/-+/g, '')
+    .trim();
+  return cleaned.length >= 20;
 }
 
 function parseAssistantSummary(raw: string): string | null {
@@ -255,10 +454,19 @@ async function extractPdfTextFromBuffer(pdfBuffer: Buffer): Promise<string> {
   try {
     return await extractPdfTextWithPassword(pdfBuffer);
   } catch (firstError: unknown) {
-    if (!isPdfPasswordError(firstError) || !PDF_DEFAULT_PASSWORD) {
+    if (!isPdfPasswordError(firstError)) {
       throw firstError;
     }
-    return await extractPdfTextWithPassword(pdfBuffer, PDF_DEFAULT_PASSWORD);
+    const knownPasswords = getKnownPdfPasswords();
+    let lastPasswordError: unknown = firstError;
+    for (const password of knownPasswords) {
+      try {
+        return await extractPdfTextWithPassword(pdfBuffer, password);
+      } catch (passwordError: unknown) {
+        lastPasswordError = passwordError;
+      }
+    }
+    throw lastPasswordError;
   }
 }
 
@@ -352,7 +560,7 @@ async function sendSqlPlanRequestToAssistant(payload: Record<string, unknown>): 
       'id INTEGER PRIMARY KEY,',
       'source TEXT, source_message_id TEXT, source_sender TEXT,',
       'bucket TEXT, s3_key TEXT, filename TEXT, content_type TEXT, size_bytes INTEGER, caption TEXT,',
-      'summary TEXT, summary_status TEXT, summary_error TEXT, created_at TEXT, updated_at TEXT',
+      'summary TEXT, content_scope TEXT, summary_status TEXT, summary_error TEXT, created_at TEXT, updated_at TEXT',
       ')',
     ].join(' ');
     const messagePayload = {
@@ -373,11 +581,12 @@ async function sendSqlPlanRequestToAssistant(payload: Record<string, unknown>): 
             '- SQL must be a single SELECT from files table only.',
             '- Never use INSERT/UPDATE/DELETE/PRAGMA/ATTACH.',
             '- Include ORDER BY id DESC by default.',
+            '- content_scope values: business | personal.',
             '- Do not assume source/source_sender constraints unless user explicitly asks for source, sender, or channel filtering.',
             '- Prefer summary matches first when user asks about file content/topic.',
             '- Honor date constraints from the prompt (for example: today, yesterday, last 7 days, on YYYY-MM-DD, from YYYY-MM-DD to YYYY-MM-DD).',
             '- If user asks download/send/open/show file bytes, set delivery="attach"; otherwise "none".',
-            '- Maximum rows returned per query is 3.',
+            `- Maximum rows returned per query is ${FILE_SQL_MAX_ROWS}.`,
             `Payload: ${JSON.stringify(payload)}`,
           ].join('\n'),
         },
@@ -446,6 +655,7 @@ function parseFileSqlPlan(raw: string): FileSqlPlan | null {
 function enforceSafeFileSql(sql: string): string {
   const normalized = String(sql || '').trim().replace(/;+\s*$/, '');
   const lowered = normalized.toLowerCase();
+  const maxRows = Number.isFinite(FILE_SQL_MAX_ROWS) && FILE_SQL_MAX_ROWS > 0 ? FILE_SQL_MAX_ROWS : 50;
   if (!lowered.startsWith('select ')) {
     throw new Error('Only SELECT queries are allowed');
   }
@@ -456,11 +666,11 @@ function enforceSafeFileSql(sql: string): string {
     throw new Error('Unsafe SQL rejected');
   }
   if (!/\blimit\s+\d+\b/i.test(normalized)) {
-    return `${normalized} LIMIT 3`;
+    return `${normalized} LIMIT ${maxRows}`;
   }
   const limitMatch = normalized.match(/\blimit\s+(\d+)\b/i);
   const requested = Number(limitMatch?.[1] || 0);
-  const capped = Number.isFinite(requested) && requested > 0 ? Math.min(requested, 3) : 3;
+  const capped = Number.isFinite(requested) && requested > 0 ? Math.min(requested, maxRows) : maxRows;
   return normalized.replace(/\blimit\s+\d+(?:\s*,\s*\d+)?(?:\s+offset\s+\d+)?\b/i, `LIMIT ${capped}`);
 }
 
@@ -600,7 +810,7 @@ function buildContentFallbackQuery(prompt: string, dateConstraint: DateConstrain
       'SELECT id, bucket, s3_key, filename, content_type, size_bytes, caption, summary, summary_status, created_at ' +
       `FROM files WHERE (${clauses.join(' OR ')})` +
       (dateConstraint ? ` AND (${dateConstraint.clause})` : '') +
-      ' ORDER BY id DESC LIMIT 3',
+      ` ORDER BY id DESC LIMIT ${FILE_SQL_MAX_ROWS}`,
     params: [...params, ...(dateConstraint ? dateConstraint.params : [])],
   };
 }
@@ -621,9 +831,48 @@ function buildSummaryFallbackQuery(prompt: string, dateConstraint: DateConstrain
       'SELECT id, bucket, s3_key, filename, content_type, size_bytes, caption, summary, summary_status, created_at ' +
       `FROM files WHERE (${clauses.join(' OR ')})` +
       (dateConstraint ? ` AND (${dateConstraint.clause})` : '') +
-      ' ORDER BY id DESC LIMIT 3',
+      ` ORDER BY id DESC LIMIT ${FILE_SQL_MAX_ROWS}`,
     params: [...params, ...(dateConstraint ? dateConstraint.params : [])],
   };
+}
+
+async function filterRowsForOwnerSearch(args: {
+  owner: string;
+  rows: any[];
+  dbCtx: DbContext;
+}): Promise<any[]> {
+  const normalizedOwner = normalizeOwner(args.owner);
+  if (normalizedOwner !== SONJA_OWNER || !Array.isArray(args.rows) || args.rows.length === 0) {
+    return Array.isArray(args.rows) ? args.rows : [];
+  }
+  const ids = args.rows
+    .map((row) => Number(row?.id))
+    .filter((id) => Number.isFinite(id) && id > 0)
+    .map((id) => Math.floor(id));
+  if (ids.length === 0) {
+    return [];
+  }
+  const placeholders = ids.map(() => '?').join(',');
+  const scopeRows = await args.dbCtx.dbAll(
+    `SELECT id, content_scope FROM files WHERE id IN (${placeholders});`,
+    ...ids,
+  );
+  const scopeById = new Map<number, ContentScope>();
+  for (const row of scopeRows || []) {
+    const id = Number(row?.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      continue;
+    }
+    scopeById.set(Math.floor(id), normalizeContentScope(row?.content_scope));
+  }
+  return args.rows.filter((row) => {
+    const id = Number(row?.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      return false;
+    }
+    const scope = scopeById.get(Math.floor(id)) || 'business';
+    return scope !== 'personal';
+  });
 }
 
 function wantsFileDelivery(prompt: string): boolean {
@@ -691,14 +940,50 @@ async function sendStatusCallback(args: {
   }
 }
 
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  const safeTimeout = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 60000;
+  return await new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${safeTimeout}ms`));
+    }, safeTimeout);
+    promise
+      .then((value) => {
+        clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+  });
+}
+
+async function s3SendWithTimeout<T>(command: unknown, label: string): Promise<T> {
+  const timeoutMs = Number.isFinite(S3_OPERATION_TIMEOUT_MS) && S3_OPERATION_TIMEOUT_MS > 0
+    ? S3_OPERATION_TIMEOUT_MS
+    : 60000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await s3.send(command as any, { abortSignal: controller.signal } as any) as T;
+  } catch (error: any) {
+    if (error?.name === 'AbortError') {
+      throw new Error(`${label} timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function ensureBucketExists(bucket: string): Promise<void> {
   if (readyBuckets.has(bucket)) {
     return;
   }
   try {
-    await s3.send(new HeadBucketCommand({ Bucket: bucket }));
+    await s3SendWithTimeout(new HeadBucketCommand({ Bucket: bucket }), 's3 head bucket');
   } catch {
-    await s3.send(new CreateBucketCommand({ Bucket: bucket }));
+    await s3SendWithTimeout(new CreateBucketCommand({ Bucket: bucket }), 's3 create bucket');
   }
   readyBuckets.add(bucket);
 }
@@ -714,12 +999,14 @@ function toUploadKey(args: { source?: string; filename?: string; providedKey?: s
   return `${FILE_KEY_PREFIX}/${source}/${stamp}_${random}_${safeName}`;
 }
 
-async function initDb(): Promise<void> {
-  await mkdir(path.dirname(path.resolve(DB_PATH)), { recursive: true });
-  db = new sqlite3.Database(DB_PATH);
-  dbGet = promisify(db.get.bind(db));
-  dbRun = promisify(db.run.bind(db)) as unknown as (sql: string, ...params: unknown[]) => Promise<void>;
-  dbAll = promisify(db.all.bind(db));
+async function initDbForOwner(owner: string): Promise<DbContext> {
+  const normalizedOwner = normalizeOwner(owner);
+  const dbPath = resolveDbPath(normalizedOwner);
+  await mkdir(path.dirname(path.resolve(dbPath)), { recursive: true });
+  const db = new sqlite3.Database(dbPath);
+  const dbGet = promisify(db.get.bind(db));
+  const dbRun = promisify(db.run.bind(db)) as unknown as (sql: string, ...params: unknown[]) => Promise<void>;
+  const dbAll = promisify(db.all.bind(db)) as unknown as (sql: string, ...params: unknown[]) => Promise<any[]>;
   await dbRun(`
     CREATE TABLE IF NOT EXISTS files (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -738,6 +1025,7 @@ async function initDb(): Promise<void> {
       pdf_text_length INTEGER NOT NULL DEFAULT 0,
       pdf_extractor TEXT,
       summary TEXT,
+      content_scope TEXT NOT NULL DEFAULT 'business',
       summary_status TEXT NOT NULL DEFAULT 'pending',
       summary_error TEXT,
       summary_model TEXT,
@@ -751,7 +1039,28 @@ async function initDb(): Promise<void> {
   await dbRun("ALTER TABLE files ADD COLUMN summary_status TEXT NOT NULL DEFAULT 'pending';").catch(() => {});
   await dbRun('ALTER TABLE files ADD COLUMN summary_error TEXT;').catch(() => {});
   await dbRun('ALTER TABLE files ADD COLUMN content_hash TEXT;').catch(() => {});
+  await dbRun("ALTER TABLE files ADD COLUMN content_scope TEXT NOT NULL DEFAULT 'business';").catch(() => {});
   await dbRun('CREATE INDEX IF NOT EXISTS idx_files_content_hash ON files(content_hash);').catch(() => {});
+  await dbRun('CREATE INDEX IF NOT EXISTS idx_files_content_scope ON files(content_scope);').catch(() => {});
+  return {
+    owner: normalizedOwner,
+    path: dbPath,
+    db,
+    dbGet,
+    dbRun,
+    dbAll,
+  };
+}
+
+async function getDbContext(owner: string): Promise<DbContext> {
+  const normalizedOwner = normalizeOwner(owner);
+  const existing = dbContexts.get(normalizedOwner);
+  if (existing) {
+    return existing;
+  }
+  const created = await initDbForOwner(normalizedOwner);
+  dbContexts.set(normalizedOwner, created);
+  return created;
 }
 
 async function bodyToBuffer(body: unknown): Promise<Buffer> {
@@ -781,7 +1090,38 @@ async function bodyToBuffer(body: unknown): Promise<Buffer> {
   return Buffer.alloc(0);
 }
 
+function logSummaryOutcome(args: {
+  outcome: 'completed' | 'deleted' | 'failed';
+  fileId: number;
+  filename: string;
+  model?: string | null;
+  extractor?: string | null;
+  summary?: string | null;
+  error?: string | null;
+}): void {
+  const stars = '***************';
+  const summarySnippet = args.summary ? safeSummarySnippet(args.summary, 220) : '';
+  const errorSnippet = args.error ? safeSummarySnippet(args.error, 220) : '';
+  // eslint-disable-next-line no-console
+  console.log(stars);
+  // eslint-disable-next-line no-console
+  console.log(
+    `[mservice-file][summary] outcome=${args.outcome} fileId=${args.fileId} filename=${args.filename} model=${args.model || 'unknown'} extractor=${args.extractor || 'unknown'}`,
+  );
+  if (summarySnippet) {
+    // eslint-disable-next-line no-console
+    console.log(`[mservice-file][summary] text=${summarySnippet}`);
+  }
+  if (errorSnippet) {
+    // eslint-disable-next-line no-console
+    console.log(`[mservice-file][summary] error=${errorSnippet}`);
+  }
+  // eslint-disable-next-line no-console
+  console.log(stars);
+}
+
 async function runPdfSummaryPipeline(args: {
+  dbRun: (sql: string, ...params: unknown[]) => Promise<void>;
   fileId: number;
   bucket: string;
   key: string;
@@ -802,6 +1142,7 @@ async function runPdfSummaryPipeline(args: {
   let summaryError = '';
   let summaryModel = ASSISTANT_MODEL;
   let extractor: string | null = null;
+  let usedPdfImageFallback = false;
   try {
     const isPdf = isPdfAttachment(args.contentType, args.filename);
     const isWord = isWordAttachment(args.contentType, args.filename);
@@ -810,24 +1151,36 @@ async function runPdfSummaryPipeline(args: {
       throw new Error('Unsupported extractable file type');
     }
     if (isPdf) {
-      extractedPdfText = normalizeWhitespace(await extractPdfTextFromBuffer(args.content));
-      extractor = 'pdf2json';
+      extractedPdfText = normalizeWhitespace(
+        await withTimeout(extractPdfTextFromBuffer(args.content), FILE_EXTRACTION_TIMEOUT_MS, 'pdf extraction'),
+      );
+      if (hasMeaningfulPdfText(extractedPdfText)) {
+        extractor = 'pdf2json';
+      } else {
+        // Scanned/image-style PDFs: retry summary path with image model.
+        extractedPdfText = '';
+        summaryModel = IMAGE_SUMMARY_MODEL;
+        extractor = 'pdf2json-image-fallback';
+        usedPdfImageFallback = true;
+      }
     } else {
       if (isWord) {
-        extractedPdfText = normalizeWhitespace(await extractWordTextFromBuffer(args.content));
+        extractedPdfText = normalizeWhitespace(
+          await withTimeout(extractWordTextFromBuffer(args.content), FILE_EXTRACTION_TIMEOUT_MS, 'word extraction'),
+        );
         extractor = 'mammoth';
       } else {
         summaryModel = IMAGE_SUMMARY_MODEL;
         extractor = 'vision';
       }
     }
-    if (!isImage && !extractedPdfText) {
-      throw new Error(isPdf ? 'No readable text extracted from PDF' : 'No readable text extracted from Word document');
+    if (isWord && !extractedPdfText) {
+      throw new Error('No readable text extracted from Word document');
     }
     if (!ASSISTANT_URL) {
       throw new Error('Summary assistant is not configured');
     }
-    const summaryPayload = {
+    const buildSummaryPayload = (useImageInput: boolean, imageFallbackFlag: boolean) => ({
       source: args.source || null,
       source_sender: args.sourceSender || null,
       source_message_id: args.sourceMessageId || null,
@@ -835,26 +1188,101 @@ async function runPdfSummaryPipeline(args: {
       content_type: args.contentType || '',
       size_bytes: args.content.length,
       caption: args.caption || '',
-      extracted_text: isImage ? '' : trimForSummary(extractedPdfText, FILE_SUMMARY_TEXT_LIMIT),
-    };
-    const raw = await sendSummaryRequestToAssistant(summaryPayload, {
-      model: summaryModel,
-      imageBase64: isImage ? args.content.toString('base64') : undefined,
+      extracted_text: useImageInput ? '' : trimForSummary(extractedPdfText, FILE_SUMMARY_TEXT_LIMIT),
+      pdf_image_fallback: imageFallbackFlag || undefined,
     });
-    if (!raw) {
-      throw new Error('Summary service returned an empty response');
-    }
-    summaryRawResponse = raw;
-    summary = parseAssistantSummary(raw);
-    if (!summary) {
-      throw new Error('Summary service response could not be parsed');
+
+    const requestSummary = async (useImageInput: boolean): Promise<{ raw: string; parsedSummary: string }> => {
+      const canAttachImagePayload =
+        useImageInput &&
+        (args.contentType || '').toLowerCase().startsWith('image/');
+      const payload = buildSummaryPayload(useImageInput, usedPdfImageFallback);
+      const raw = await sendSummaryRequestToAssistant(payload, {
+        model: summaryModel,
+        imageBase64: canAttachImagePayload ? args.content.toString('base64') : undefined,
+      });
+      if (!raw) {
+        throw new Error('Summary service returned an empty response');
+      }
+      const parsedSummary = parseAssistantSummary(raw);
+      if (!parsedSummary) {
+        throw new Error('Summary service response could not be parsed');
+      }
+      return { raw, parsedSummary };
+    };
+
+    const useImageSummaryInput = isImage || usedPdfImageFallback;
+    try {
+      const firstAttempt = await requestSummary(useImageSummaryInput);
+      summaryRawResponse = firstAttempt.raw;
+      summary = firstAttempt.parsedSummary;
+      const shouldRetryPdfFromSemanticNoText =
+        isPdf &&
+        !useImageSummaryInput &&
+        summaryIndicatesNoReadableText(summary || '');
+      if (shouldRetryPdfFromSemanticNoText) {
+        usedPdfImageFallback = true;
+        summaryModel = IMAGE_SUMMARY_MODEL;
+        extractor = 'pdf2json-semantic-image-retry';
+        const semanticRetry = await requestSummary(true);
+        summaryRawResponse = semanticRetry.raw;
+        summary = semanticRetry.parsedSummary;
+      }
+    } catch (firstSummaryError: any) {
+      const shouldRetryPdfAsImage = isPdf && !usedPdfImageFallback && !isImage;
+      const firstErrorMessage = String(firstSummaryError?.message || '');
+      const firstImageContractFailure =
+        useImageSummaryInput &&
+        (firstErrorMessage.includes('Summary service response could not be parsed') ||
+          firstErrorMessage.includes('Summary service returned an empty response'));
+      const canTryVisionFallbackModel =
+        firstImageContractFailure &&
+        IMAGE_SUMMARY_FALLBACK_MODEL.length > 0 &&
+        IMAGE_SUMMARY_FALLBACK_MODEL !== summaryModel;
+
+      if (!shouldRetryPdfAsImage) {
+        if (!canTryVisionFallbackModel) {
+          throw firstSummaryError;
+        }
+        summaryModel = IMAGE_SUMMARY_FALLBACK_MODEL;
+        extractor = isImage ? 'vision-fallback' : `${extractor || 'vision'}-fallback`;
+        const fallbackAttempt = await requestSummary(true);
+        summaryRawResponse = fallbackAttempt.raw;
+        summary = fallbackAttempt.parsedSummary;
+      } else {
+        usedPdfImageFallback = true;
+        summaryModel = IMAGE_SUMMARY_MODEL;
+        extractor = 'pdf2json-image-retry';
+        try {
+          const retryAttempt = await requestSummary(true);
+          summaryRawResponse = retryAttempt.raw;
+          summary = retryAttempt.parsedSummary;
+        } catch (pdfImageRetryError: any) {
+          const retryMessage = String(pdfImageRetryError?.message || '');
+          const retryImageContractFailure =
+            retryMessage.includes('Summary service response could not be parsed') ||
+            retryMessage.includes('Summary service returned an empty response');
+          const canFallbackAfterPdfRetry =
+            retryImageContractFailure &&
+            IMAGE_SUMMARY_FALLBACK_MODEL.length > 0 &&
+            IMAGE_SUMMARY_FALLBACK_MODEL !== summaryModel;
+          if (!canFallbackAfterPdfRetry) {
+            throw pdfImageRetryError;
+          }
+          summaryModel = IMAGE_SUMMARY_FALLBACK_MODEL;
+          extractor = 'pdf2json-image-retry-fallback';
+          const fallbackAttempt = await requestSummary(true);
+          summaryRawResponse = fallbackAttempt.raw;
+          summary = fallbackAttempt.parsedSummary;
+        }
+      }
     }
 
     const metadataWithSummary: Record<string, string> = {
       ...args.baseMetadata,
       ...(metadataValue(summary, 512) ? { summary: metadataValue(summary, 512)! } : {}),
     };
-    await s3.send(
+    await s3SendWithTimeout(
       new PutObjectCommand({
         Bucket: args.bucket,
         Key: args.key,
@@ -862,8 +1290,9 @@ async function runPdfSummaryPipeline(args: {
         ContentType: args.contentType || 'application/octet-stream',
         Metadata: metadataWithSummary,
       }),
+      's3 metadata update',
     );
-    await dbRun(
+    await args.dbRun(
       `UPDATE files
        SET pdf_text = ?,
            pdf_text_length = ?,
@@ -885,9 +1314,64 @@ async function runPdfSummaryPipeline(args: {
       JSON.stringify({ ...args.baseMetadata, summary: safeSummarySnippet(summary, 512) }),
       args.fileId,
     );
+    logSummaryOutcome({
+      outcome: 'completed',
+      fileId: args.fileId,
+      filename: args.filename,
+      model: summaryModel,
+      extractor,
+      summary,
+    });
   } catch (err: any) {
     summaryError = String(err?.message || 'summary pipeline failed');
-    await dbRun(
+    const isPdf = isPdfAttachment(args.contentType, args.filename);
+    const isImage = isImageAttachment(args.contentType, args.filename);
+    const passwordLockedPdf = isPdf && isPdfPasswordError(err);
+    const imageFallbackPdf = isPdf && usedPdfImageFallback;
+    const imageParseOrEmptyFailure =
+      isImage &&
+      (summaryError.includes('Summary service response could not be parsed') ||
+        summaryError.includes('Summary service returned an empty response'));
+    if (passwordLockedPdf) {
+      await s3SendWithTimeout(new DeleteObjectCommand({ Bucket: args.bucket, Key: args.key }), 's3 delete skipped file').catch(() => {});
+      await args.dbRun(`DELETE FROM files WHERE id = ?;`, args.fileId);
+      logSummaryOutcome({
+        outcome: 'deleted',
+        fileId: args.fileId,
+        filename: args.filename,
+        model: summaryModel,
+        extractor,
+        error: summaryError,
+      });
+      return;
+    }
+    if (imageParseOrEmptyFailure) {
+      await s3SendWithTimeout(new DeleteObjectCommand({ Bucket: args.bucket, Key: args.key }), 's3 delete skipped file').catch(() => {});
+      await args.dbRun(`DELETE FROM files WHERE id = ?;`, args.fileId);
+      logSummaryOutcome({
+        outcome: 'deleted',
+        fileId: args.fileId,
+        filename: args.filename,
+        model: summaryModel,
+        extractor,
+        error: summaryError,
+      });
+      return;
+    }
+    if (imageFallbackPdf) {
+      await s3SendWithTimeout(new DeleteObjectCommand({ Bucket: args.bucket, Key: args.key }), 's3 delete skipped file').catch(() => {});
+      await args.dbRun(`DELETE FROM files WHERE id = ?;`, args.fileId);
+      logSummaryOutcome({
+        outcome: 'deleted',
+        fileId: args.fileId,
+        filename: args.filename,
+        model: summaryModel,
+        extractor,
+        error: summaryError,
+      });
+      return;
+    }
+    await args.dbRun(
       `UPDATE files
        SET pdf_text = ?,
            pdf_text_length = ?,
@@ -909,6 +1393,14 @@ async function runPdfSummaryPipeline(args: {
       JSON.stringify(args.baseMetadata),
       args.fileId,
     );
+    logSummaryOutcome({
+      outcome: 'failed',
+      fileId: args.fileId,
+      filename: args.filename,
+      model: summaryModel,
+      extractor,
+      error: summaryError,
+    });
     if (isWhatsappChatId(args.sourceSender)) {
       const statusMessage =
         `Upload status: stored (File ID ${args.fileId}). ` +
@@ -934,13 +1426,15 @@ async function runPdfSummaryPipeline(args: {
   }
 }
 
-app.get('/health', authMiddleware, async (_req, res) => {
+app.get('/health', authMiddleware, async (req, res) => {
   try {
-    const bucket = resolveBucket(undefined);
+    const owner = normalizeOwner(req.query.owner);
+    const dbCtx = await getDbContext(owner);
+    const bucket = resolveBucket(undefined, owner);
     await s3.send(new HeadBucketCommand({ Bucket: bucket }));
-    const row = await dbGet('SELECT COUNT(*) AS count FROM files;');
+    const row = await dbCtx.dbGet('SELECT COUNT(*) AS count FROM files;');
     const filesCount = Number(row?.count || 0);
-    res.json({ status: 'ok', bucket, endpoint: S3_ENDPOINT, db_path: DB_PATH, files_count: filesCount });
+    res.json({ status: 'ok', owner, bucket, endpoint: S3_ENDPOINT, db_path: dbCtx.path, files_count: filesCount });
   } catch (err: any) {
     res.status(503).json({ status: 'error', message: err?.message || 'S3 unavailable' });
   }
@@ -948,13 +1442,15 @@ app.get('/health', authMiddleware, async (_req, res) => {
 
 app.post('/bucket/create', authMiddleware, async (req, res) => {
   try {
-    const bucket = resolveBucket(req.body?.bucket);
+    const owner = normalizeOwner(req.body?.owner);
+    const bucket = resolveBucket(req.body?.bucket, owner);
     await s3.send(new CreateBucketCommand({ Bucket: bucket }));
-    res.status(201).json({ success: true, bucket });
+    res.status(201).json({ success: true, owner, bucket });
   } catch (err: any) {
     const message = String(err?.message || 'create bucket failed');
     if (message.toLowerCase().includes('already owned') || message.toLowerCase().includes('already exists')) {
-      res.status(200).json({ success: true, bucket: resolveBucket(req.body?.bucket), exists: true });
+      const owner = normalizeOwner(req.body?.owner);
+      res.status(200).json({ success: true, owner, bucket: resolveBucket(req.body?.bucket, owner), exists: true });
       return;
     }
     res.status(500).json({ success: false, message });
@@ -963,7 +1459,9 @@ app.post('/bucket/create', authMiddleware, async (req, res) => {
 
 app.post('/file/upload', authMiddleware, async (req, res) => {
   try {
-    const bucket = resolveBucket(req.body?.bucket);
+    const owner = normalizeOwner(req.body?.owner ?? req.body?.source_owner);
+    const dbCtx = await getDbContext(owner);
+    const bucket = resolveBucket(req.body?.bucket, owner);
     const providedKey = typeof req.body?.key === 'string' ? req.body.key.trim() : '';
     const dataBase64Raw = typeof req.body?.data_base64 === 'string' ? req.body.data_base64.trim() : '';
     const contentType = typeof req.body?.content_type === 'string' ? req.body.content_type.trim() : 'application/octet-stream';
@@ -976,13 +1474,13 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
     const callbackUrl = typeof req.body?.callback_url === 'string' ? req.body.callback_url.trim() : '';
     const callbackAuthorization =
       typeof req.body?.callback_authorization === 'string' ? req.body.callback_authorization.trim() : '';
-    const key = toUploadKey({ source, filename, providedKey });
+    const key = toUploadKey({ source: `${owner}/${source || 'ui'}`, filename, providedKey });
     const dataBase64 = dataBase64Raw.startsWith('data:') && dataBase64Raw.includes(',')
       ? dataBase64Raw.split(',').pop() || ''
       : dataBase64Raw;
     // eslint-disable-next-line no-console
     console.log(
-      `[mservice-file][upload] start source=${source || 'unknown'} sender=${sourceSender || 'unknown'} filename=${filename || 'file.bin'} mime=${contentType || 'application/octet-stream'} bytes(base64)=${dataBase64.length}`,
+      `[mservice-file][upload] start owner=${owner} source=${source || 'unknown'} sender=${sourceSender || 'unknown'} filename=${filename || 'file.bin'} mime=${contentType || 'application/octet-stream'} bytes(base64)=${dataBase64.length}`,
     );
 
     if (!dataBase64) {
@@ -994,7 +1492,7 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
     const contentHash = crypto.createHash('sha256').update(bytes).digest('hex');
     await ensureBucketExists(bucket);
     if (FILE_DEDUP_ENABLED) {
-      const existing = await dbGet(
+      const existing = await dbCtx.dbGet(
         `SELECT id, bucket, s3_key, filename, content_type, size_bytes, caption, summary, summary_status, pdf_text_length
          FROM files
          WHERE bucket = ? AND content_hash = ?
@@ -1029,7 +1527,7 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
       ...(metadataValue(sourceMessageId, 128) ? { source_message_id: metadataValue(sourceMessageId, 128)! } : {}),
       ...(metadataValue(caption, 256) ? { caption: metadataValue(caption, 256)! } : {}),
     };
-    await s3.send(
+    await s3SendWithTimeout(
       new PutObjectCommand({
         Bucket: bucket,
         Key: key,
@@ -1037,6 +1535,7 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
         ContentType: contentType,
         Metadata: baseMetadata,
       }),
+      's3 upload',
     );
 
     const shouldProcessPdfSummary =
@@ -1044,7 +1543,7 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
     const initialSummaryStatus: SummaryStatus =
       shouldProcessPdfSummary && ASSISTANT_URL ? 'pending' : 'skipped';
 
-    await dbRun(
+    await dbCtx.dbRun(
       `INSERT INTO files (
         source,
         source_message_id,
@@ -1108,14 +1607,15 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
       null,
     );
 
-    const record = await dbGet('SELECT * FROM files WHERE s3_key = ? LIMIT 1;', key);
+    const record = await dbCtx.dbGet('SELECT * FROM files WHERE s3_key = ? LIMIT 1;', key);
     const fileId = Number(record?.id || 0) || null;
     // eslint-disable-next-line no-console
     console.log(
-      `[mservice-file][upload] stored fileId=${fileId ?? 'unknown'} key=${key} summary_status=${initialSummaryStatus}`,
+      `[mservice-file][upload] stored owner=${owner} fileId=${fileId ?? 'unknown'} key=${key} summary_status=${initialSummaryStatus}`,
     );
     res.status(201).json({
       success: true,
+      owner,
       bucket,
       key,
       bytes: bytes.length,
@@ -1130,6 +1630,7 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
 
     if (fileId && shouldProcessPdfSummary && ASSISTANT_URL) {
       void runPdfSummaryPipeline({
+        dbRun: dbCtx.dbRun,
         fileId,
         bucket,
         key,
@@ -1155,6 +1656,8 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
 app.post('/llm-query', authMiddleware, async (req, res) => {
   try {
     const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : '';
+    const owner = normalizeOwner(req.body?.owner ?? req.body?.query_owner ?? req.body?.source_owner);
+    const dbCtx = await getDbContext(owner);
     const sourceChannel = typeof req.body?.source_channel === 'string' ? req.body.source_channel.trim() : '';
     const sourceFrom = typeof req.body?.source_from === 'string' ? req.body.source_from.trim() : '';
     if (!prompt) {
@@ -1170,10 +1673,10 @@ app.post('/llm-query', authMiddleware, async (req, res) => {
     const rawPlan = await sendSqlPlanRequestToAssistant(planPayload);
     const parsedPlan = rawPlan ? parseFileSqlPlan(rawPlan) : null;
     const fallbackSql =
-      "SELECT id, bucket, s3_key, filename, content_type, size_bytes, caption, summary, summary_status, created_at FROM files ORDER BY id DESC LIMIT 3";
+      `SELECT id, bucket, s3_key, filename, content_type, size_bytes, caption, summary, summary_status, created_at FROM files ORDER BY id DESC LIMIT ${FILE_SQL_MAX_ROWS}`;
     const dateConstraint = extractDateConstraintFromPrompt(prompt);
     const summaryFirstQuery = buildSummaryFallbackQuery(prompt, dateConstraint);
-    let rows = summaryFirstQuery ? await dbAll(summaryFirstQuery.sql, ...summaryFirstQuery.params) : [];
+    let rows = summaryFirstQuery ? await dbCtx.dbAll(summaryFirstQuery.sql, ...summaryFirstQuery.params) : [];
     let effectiveSql = summaryFirstQuery?.sql || '';
     let sql = enforceSafeFileSql(parsedPlan?.sql || fallbackSql);
     if (sqlHasSourceConstraint(sql) && !promptMentionsSourceConstraint(prompt)) {
@@ -1183,13 +1686,13 @@ app.post('/llm-query', authMiddleware, async (req, res) => {
       if (dateConstraint && !sqlHasDateConstraint(sql)) {
         sql = fallbackSql;
       }
-      rows = await dbAll(sql);
+      rows = await dbCtx.dbAll(sql);
       effectiveSql = sql;
     }
     if ((!rows || rows.length === 0) && prompt) {
       const fallbackQuery = buildContentFallbackQuery(prompt, dateConstraint);
       if (fallbackQuery) {
-        const fallbackRows = await dbAll(fallbackQuery.sql, ...fallbackQuery.params);
+        const fallbackRows = await dbCtx.dbAll(fallbackQuery.sql, ...fallbackQuery.params);
         if (fallbackRows.length > 0) {
           rows = fallbackRows;
           effectiveSql = fallbackQuery.sql;
@@ -1231,6 +1734,7 @@ app.post('/llm-query', authMiddleware, async (req, res) => {
       });
       res.json({
         success: true,
+        owner,
         type: 'attachment',
         message: lines.length > 0 ? `Sending ${lines.length} file(s):\n${lines.join('\n')}` : 'No matching files found.',
         rows,
@@ -1239,14 +1743,14 @@ app.post('/llm-query', authMiddleware, async (req, res) => {
       return;
     }
 
-    const lines = (rows || []).map((row: any) => {
-      const id = Number(row?.id || 0);
-      const filename = row?.filename ? String(row.filename) : '(unnamed)';
-      const bucket = row?.bucket ? String(row.bucket) : S3_DEFAULT_BUCKET;
-      const key = row?.s3_key ? String(row.s3_key) : '';
-      const link = key ? buildFileDownloadLink(req, bucket, key) : '#';
-      return `- ${id}: ${filename} | Download Link: ${link}`;
-    });
+      const lines = (rows || []).map((row: any) => {
+        const id = Number(row?.id || 0);
+        const filename = row?.filename ? String(row.filename) : '(unnamed)';
+        const bucket = row?.bucket ? String(row.bucket) : resolveDefaultBucketForOwner(owner);
+        const key = row?.s3_key ? String(row.s3_key) : '';
+        const link = key ? buildFileDownloadLink(req, bucket, key) : '#';
+        return `- ${id}: ${filename} | Download Link: ${link}`;
+      });
     const summaryLines = (rows || [])
       .map((row: any) => {
         const id = Number(row?.id || 0);
@@ -1269,6 +1773,7 @@ app.post('/llm-query', authMiddleware, async (req, res) => {
       : 'No matching files found.';
     res.json({
       success: true,
+      owner,
       type: 'message',
       message,
       rows,
@@ -1282,11 +1787,13 @@ app.post('/llm-query', authMiddleware, async (req, res) => {
 
 app.get('/file/download', authMiddleware, async (req, res) => {
   try {
-    let bucket = resolveBucket(req.query.bucket);
+    const owner = normalizeOwner(req.query.owner);
+    const dbCtx = await getDbContext(owner);
+    let bucket = resolveBucket(req.query.bucket, owner);
     let key = typeof req.query.key === 'string' ? req.query.key.trim() : '';
     const id = Number(req.query.id);
     if ((!key || !bucket) && Number.isFinite(id) && id > 0) {
-      const row = await dbGet('SELECT bucket, s3_key FROM files WHERE id = ? LIMIT 1;', id);
+      const row = await dbCtx.dbGet('SELECT bucket, s3_key FROM files WHERE id = ? LIMIT 1;', id);
       bucket = row?.bucket ? String(row.bucket) : bucket;
       key = row?.s3_key ? String(row.s3_key) : key;
     }
@@ -1310,7 +1817,8 @@ app.get('/file/download', authMiddleware, async (req, res) => {
 
 app.get('/file/list', authMiddleware, async (req, res) => {
   try {
-    const bucket = resolveBucket(req.query.bucket);
+    const owner = normalizeOwner(req.query.owner);
+    const bucket = resolveBucket(req.query.bucket, owner);
     const prefix = typeof req.query.prefix === 'string' ? req.query.prefix : undefined;
     const out = await s3.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix }));
     const rows = (out.Contents || []).map((item) => ({
@@ -1319,7 +1827,7 @@ app.get('/file/list', authMiddleware, async (req, res) => {
       last_modified: item.LastModified ? item.LastModified.toISOString() : null,
       etag: item.ETag || null,
     }));
-    res.json({ success: true, bucket, count: rows.length, files: rows });
+    res.json({ success: true, owner, bucket, count: rows.length, files: rows });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err?.message || 'list failed' });
   }
@@ -1327,6 +1835,8 @@ app.get('/file/list', authMiddleware, async (req, res) => {
 
 app.get('/file/records', authMiddleware, async (req, res) => {
   try {
+    const owner = normalizeOwner(req.query.owner);
+    const dbCtx = await getDbContext(owner);
     const limitRaw = Number(req.query.limit);
     const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.floor(limitRaw), 500) : 100;
     const source = typeof req.query.source === 'string' ? req.query.source.trim() : '';
@@ -1352,22 +1862,74 @@ app.get('/file/records', authMiddleware, async (req, res) => {
       `pdf_text_length, summary, summary_status, summary_error, created_at, updated_at FROM files ` +
       `${where.length > 0 ? `WHERE ${where.join(' AND ')} ` : ''}` +
       `ORDER BY id DESC LIMIT ?;`;
-    const rows = await dbAll(sql, ...params, limit);
-    res.json({ success: true, count: rows.length, files: rows });
+    const rows = await dbCtx.dbAll(sql, ...params, limit);
+    res.json({ success: true, owner, count: rows.length, files: rows });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err?.message || 'records query failed' });
   }
 });
 
+app.get('/file/status', authMiddleware, async (req, res) => {
+  try {
+    const owner = normalizeOwner(req.query.owner);
+    const dbCtx = await getDbContext(owner);
+    const id = Number(req.query.id);
+    const key = typeof req.query.key === 'string' ? req.query.key.trim() : '';
+    if ((!Number.isFinite(id) || id <= 0) && !key) {
+      res.status(400).json({ success: false, message: 'id or key is required' });
+      return;
+    }
+    const row = Number.isFinite(id) && id > 0
+      ? await dbCtx.dbGet(
+        `SELECT id, bucket, s3_key, filename, content_type, summary_status, summary, summary_error, created_at, updated_at
+         FROM files
+         WHERE id = ?
+         LIMIT 1;`,
+        Math.floor(id),
+      )
+      : await dbCtx.dbGet(
+        `SELECT id, bucket, s3_key, filename, content_type, summary_status, summary, summary_error, created_at, updated_at
+         FROM files
+         WHERE s3_key = ?
+         LIMIT 1;`,
+        key,
+      );
+    if (!row) {
+      res.status(200).json({
+        success: true,
+        owner,
+        file: {
+          id: Number.isFinite(id) && id > 0 ? Math.floor(id) : null,
+          bucket: null,
+          s3_key: key || null,
+          filename: null,
+          content_type: null,
+          summary_status: 'deleted',
+          summary: null,
+          summary_error: 'status record removed',
+          created_at: null,
+          updated_at: null,
+        },
+      });
+      return;
+    }
+    res.json({ success: true, owner, file: row });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || 'status query failed' });
+  }
+});
+
 app.delete('/file/delete', authMiddleware, async (req, res) => {
   try {
-    let bucket = resolveBucket(req.query.bucket ?? req.body?.bucket);
+    const owner = normalizeOwner(req.query.owner ?? req.body?.owner);
+    const dbCtx = await getDbContext(owner);
+    let bucket = resolveBucket(req.query.bucket ?? req.body?.bucket, owner);
     const keyCandidate = req.query.key ?? req.body?.key;
     let key = typeof keyCandidate === 'string' ? keyCandidate.trim() : '';
     const idCandidate = req.query.id ?? req.body?.id;
     const id = Number(idCandidate);
     if ((!key || !bucket) && Number.isFinite(id) && id > 0) {
-      const row = await dbGet('SELECT bucket, s3_key FROM files WHERE id = ? LIMIT 1;', id);
+      const row = await dbCtx.dbGet('SELECT bucket, s3_key FROM files WHERE id = ? LIMIT 1;', id);
       bucket = row?.bucket ? String(row.bucket) : bucket;
       key = row?.s3_key ? String(row.s3_key) : key;
     }
@@ -1376,22 +1938,25 @@ app.delete('/file/delete', authMiddleware, async (req, res) => {
       return;
     }
     await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
-    await dbRun('DELETE FROM files WHERE bucket = ? AND s3_key = ?;', bucket, key);
-    res.json({ success: true, bucket, key });
+    await dbCtx.dbRun('DELETE FROM files WHERE bucket = ? AND s3_key = ?;', bucket, key);
+    res.json({ success: true, owner, bucket, key });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err?.message || 'delete failed' });
   }
 });
 
 async function start(): Promise<void> {
-  await initDb();
+  const meCtx = await getDbContext(DEFAULT_OWNER);
+  const sonjaCtx = await getDbContext(SONJA_OWNER);
   app.listen(PORT, () => {
     // eslint-disable-next-line no-console
     console.log(`[mservice-file] listening on port ${PORT}`);
     // eslint-disable-next-line no-console
     console.log(`[mservice-file] s3 endpoint ${S3_ENDPOINT} bucket ${S3_DEFAULT_BUCKET}`);
     // eslint-disable-next-line no-console
-    console.log(`[mservice-file] sqlite ${DB_PATH}`);
+    console.log(`[mservice-file] owner=${DEFAULT_OWNER} sqlite ${meCtx.path} bucket ${resolveDefaultBucketForOwner(DEFAULT_OWNER)}`);
+    // eslint-disable-next-line no-console
+    console.log(`[mservice-file] owner=${SONJA_OWNER} sqlite ${sonjaCtx.path} bucket ${resolveDefaultBucketForOwner(SONJA_OWNER)}`);
   });
 }
 

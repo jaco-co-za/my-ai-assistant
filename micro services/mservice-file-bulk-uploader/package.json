@@ -1,0 +1,13 @@
+{
+  "name": "mservice-file-bulk-uploader",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "file-bulk-uploader": "src/index.mjs"
+  },
+  "scripts": {
+    "start": "node src/index.mjs",
+    "build": "node -e \"console.log('mservice-file-bulk-uploader: no build step')\""
+  }
+}
