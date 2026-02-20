@@ -3910,40 +3910,48 @@ export function createLlmHandler({
       }
       const wantsSummary = isSummaryMailRequest(prompt);
       if (!summaryText || wantsSummary) {
-        const summaryPrompt = buildEmailReadSummaryPrompt({
-          prompt,
-          email: {
-            id: emailId,
-            from_raw: row?.from_raw ? String(row.from_raw) : null,
-            to_raw: row?.to_raw ? String(row.to_raw) : null,
-            cc_raw: row?.cc_raw ? String(row.cc_raw) : null,
-            bcc_raw: row?.bcc_raw ? String(row.bcc_raw) : null,
-            subject: row?.subject ? String(row.subject) : null,
-            received_at: row?.received_at ? String(row.received_at) : null,
-            folder: row?.folder_name ? String(row.folder_name) : folderParts.folder,
-            subfolder: folderParts.subfolder,
-            text_body: normalizedBody || null,
-            html_body: normalizedHtmlBody || null,
-          },
-          attachments: attachments.map((attachment) => ({
-            id: Number(attachment.id || 0),
-            filename: attachment.filename || null,
-            content_type: attachment.content_type || null,
-            size: attachment.size ?? null,
-          })),
-          pdf_extractions: pdfExtractions,
-        });
-        const summaryRaw = await sendToAssistant(summaryPrompt, { model: 'qwen2.5-coder:14b' });
-        const parsedSummary = summaryRaw ? parseEmailReadSummary(summaryRaw) : null;
-        const generatedSummary =
-          parsedSummary && typeof parsedSummary.ai_summary === 'string'
-            ? parsedSummary.ai_summary.trim()
-            : '';
-        if (generatedSummary && !isInvalidSummaryText(generatedSummary)) {
-          summaryText = generatedSummary;
-          await saveEmailSummaryCache(dbRun, emailId, generatedSummary, 'qwen2.5-coder:14b', summaryRaw || '');
-        } else if (!summaryText) {
-          summaryText = '';
+        try {
+          const summaryPrompt = buildEmailReadSummaryPrompt({
+            prompt,
+            email: {
+              id: emailId,
+              from_raw: row?.from_raw ? String(row.from_raw) : null,
+              to_raw: row?.to_raw ? String(row.to_raw) : null,
+              cc_raw: row?.cc_raw ? String(row.cc_raw) : null,
+              bcc_raw: row?.bcc_raw ? String(row.bcc_raw) : null,
+              subject: row?.subject ? String(row.subject) : null,
+              received_at: row?.received_at ? String(row.received_at) : null,
+              folder: row?.folder_name ? String(row.folder_name) : folderParts.folder,
+              subfolder: folderParts.subfolder,
+              text_body: normalizedBody || null,
+              html_body: normalizedHtmlBody || null,
+            },
+            attachments: attachments.map((attachment) => ({
+              id: Number(attachment.id || 0),
+              filename: attachment.filename || null,
+              content_type: attachment.content_type || null,
+              size: attachment.size ?? null,
+            })),
+            pdf_extractions: pdfExtractions,
+          });
+          const summaryRaw = await sendToAssistant(summaryPrompt, { model: 'qwen2.5-coder:14b' });
+          const parsedSummary = summaryRaw ? parseEmailReadSummary(summaryRaw) : null;
+          const generatedSummary =
+            parsedSummary && typeof parsedSummary.ai_summary === 'string'
+              ? parsedSummary.ai_summary.trim()
+              : '';
+          if (generatedSummary && !isInvalidSummaryText(generatedSummary)) {
+            summaryText = generatedSummary;
+            await saveEmailSummaryCache(dbRun, emailId, generatedSummary, 'qwen2.5-coder:14b', summaryRaw || '');
+          } else if (!summaryText) {
+            summaryText = '';
+          }
+        } catch (err: any) {
+          // eslint-disable-next-line no-console
+          console.log('Email summary generation failed for read request ->', err?.message || String(err));
+          if (!summaryText) {
+            summaryText = '';
+          }
         }
       }
       const structuredPayload = {
