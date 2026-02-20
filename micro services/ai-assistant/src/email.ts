@@ -76,8 +76,10 @@ type EmailAttachmentRow = {
 };
 
 type ParsedEmailResponse = {
+  success?: unknown;
   confirm?: unknown;
   message?: unknown;
+  response?: unknown;
   type?: unknown;
   notify?: unknown;
   ai_summary?: unknown;
@@ -588,6 +590,14 @@ export async function handleEmail(
     const trimmed = responseText.trim();
     try {
       const parsed = JSON.parse(trimmed) as ParsedEmailResponse;
+      const parsedSuccess = typeof parsed?.success === "boolean" ? parsed.success : true;
+      if (!parsedSuccess) {
+        const upstreamMessage =
+          (typeof parsed?.message === "string" && parsed.message.trim()) ||
+          (typeof parsed?.response === "string" && parsed.response.trim()) ||
+          "Email service returned an error";
+        return { success: false, code: 503, msg: `Email service is unavailable: ${upstreamMessage}`, uuid };
+      }
       const confirm = parsed?.confirm === true;
       const confirmMessage = typeof parsed?.message === "string" ? parsed.message.trim() : "";
       if (confirm && confirmMessage) {
