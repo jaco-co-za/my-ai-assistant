@@ -2210,6 +2210,17 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
       caption,
       requestedScope: requestedContentScope,
     });
+    const skipSummaryForJpeg = isJpegAttachment(contentType, filename);
+    const shouldProcessPdfSummary =
+      !skipSummaryForJpeg &&
+      (isPdfAttachment(contentType, filename) || isWordAttachment(contentType, filename) || isImageAttachment(contentType, filename));
+    const baseMetadata: Record<string, string> = {
+      ...(metadataValue(source, 64) ? { source: metadataValue(source, 64)! } : {}),
+      ...(metadataValue(sourceSender, 128) ? { source_sender: metadataValue(sourceSender, 128)! } : {}),
+      ...(metadataValue(sourceMessageId, 128) ? { source_message_id: metadataValue(sourceMessageId, 128)! } : {}),
+      ...(metadataValue(caption, 256) ? { caption: metadataValue(caption, 256)! } : {}),
+      content_scope: initialContentScope,
+    };
     await ensureBucketExists(bucket);
     if (FILE_DEDUP_ENABLED) {
       const existing = await dbCtx.dbGet(
@@ -2222,11 +2233,67 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
         contentHash,
       );
       if (existing?.id) {
+        const existingId = Number(existing.id) || 0;
+        const existingSummaryStatusRaw = String(existing.summary_status || '').trim().toLowerCase();
+        const defaultSummaryStatus = shouldProcessPdfSummary && ASSISTANT_URL ? 'pending' : 'skipped';
+        let resolvedSummaryStatus =
+          existingSummaryStatusRaw === 'pending' ||
+            existingSummaryStatusRaw === 'completed' ||
+            existingSummaryStatusRaw === 'failed' ||
+            existingSummaryStatusRaw === 'skipped'
+            ? existingSummaryStatusRaw
+            : defaultSummaryStatus;
+        let summaryAsync = false;
+        if (!shouldProcessPdfSummary && resolvedSummaryStatus !== 'skipped' && existingId > 0) {
+          const fallbackSummary = skipSummaryForJpeg ? 'NA' : null;
+          await dbCtx.dbRun(
+            `UPDATE files
+             SET summary = COALESCE(summary, ?),
+                 summary_status = 'skipped',
+                 summary_error = NULL,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = ?;`,
+            fallbackSummary,
+            existingId,
+          );
+          resolvedSummaryStatus = 'skipped';
+        }
+        if (shouldProcessPdfSummary && ASSISTANT_URL && resolvedSummaryStatus === 'pending' && existingId > 0) {
+          summaryAsync = true;
+          await dbCtx.dbRun(
+            `UPDATE files
+             SET summary_status = 'pending',
+                 summary_error = NULL,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = ?;`,
+            existingId,
+          );
+          const dedupKey = String(existing.s3_key || key);
+          const dedupFilename = String(existing.filename || filename || '');
+          const dedupContentType = String(existing.content_type || contentType || 'application/octet-stream');
+          void runPdfSummaryPipeline({
+            dbRun: dbCtx.dbRun,
+            fileId: existingId,
+            bucket: String(existing.bucket || bucket),
+            key: dedupKey,
+            filename: dedupFilename,
+            contentType: dedupContentType,
+            source,
+            sourceSender,
+            sourceMessageId,
+            caption,
+            callbackUrl,
+            callbackAuthorization,
+            contentScope: normalizeContentScope(existing.content_scope || initialContentScope),
+            baseMetadata,
+            content: bytes,
+          });
+        }
         res.status(200).json({
           success: true,
           duplicate: true,
           deduped: true,
-          file_id: Number(existing.id) || null,
+          file_id: existingId > 0 ? existingId : null,
           bucket: String(existing.bucket || bucket),
           key: String(existing.s3_key || ''),
           filename: String(existing.filename || filename || ''),
@@ -2235,20 +2302,13 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
           caption: existing.caption ?? null,
           summary: typeof existing.summary === 'string' ? existing.summary : null,
           content_scope: normalizeContentScope(existing.content_scope),
-          summary_status: typeof existing.summary_status === 'string' ? existing.summary_status : 'unknown',
+          summary_status: resolvedSummaryStatus,
           pdf_text_length: Number(existing.pdf_text_length || 0),
-          summary_async: false,
+          summary_async: summaryAsync,
         });
         return;
       }
     }
-    const baseMetadata: Record<string, string> = {
-      ...(metadataValue(source, 64) ? { source: metadataValue(source, 64)! } : {}),
-      ...(metadataValue(sourceSender, 128) ? { source_sender: metadataValue(sourceSender, 128)! } : {}),
-      ...(metadataValue(sourceMessageId, 128) ? { source_message_id: metadataValue(sourceMessageId, 128)! } : {}),
-      ...(metadataValue(caption, 256) ? { caption: metadataValue(caption, 256)! } : {}),
-      content_scope: initialContentScope,
-    };
     await s3SendWithTimeout(
       new PutObjectCommand({
         Bucket: bucket,
@@ -2260,10 +2320,6 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
       's3 upload',
     );
 
-    const skipSummaryForJpeg = isJpegAttachment(contentType, filename);
-    const shouldProcessPdfSummary =
-      !skipSummaryForJpeg &&
-      (isPdfAttachment(contentType, filename) || isWordAttachment(contentType, filename) || isImageAttachment(contentType, filename));
     const initialSummaryStatus: SummaryStatus =
       shouldProcessPdfSummary && ASSISTANT_URL ? 'pending' : 'skipped';
     const initialSummary = skipSummaryForJpeg ? 'NA' : null;

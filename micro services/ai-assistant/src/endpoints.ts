@@ -222,7 +222,14 @@ async function uploadToFileService(args: {
   base64: string;
   callbackUrl?: string;
   callbackAuthorization?: string;
-}): Promise<{ fileId: number | null; key: string | null; summary: string | null; summaryStatus: string | null }> {
+}): Promise<{
+  fileId: number | null;
+  key: string | null;
+  summary: string | null;
+  summaryStatus: string | null;
+  summaryAsync: boolean;
+  duplicate: boolean;
+}> {
   const url = resolveFileUploadUrl(process.env.FILE_MICRO_SERVICE_URL);
   const token = normalizeBearer(process.env.FILE_MICRO_SERVICE_AUTH ?? process.env.WEBHOOK_BEARER_TOKEN ?? "");
   const controller = new AbortController();
@@ -276,6 +283,8 @@ async function uploadToFileService(args: {
       typeof parsed?.summary_status === "string" && parsed.summary_status.trim().length > 0
         ? parsed.summary_status.trim().toLowerCase()
         : null,
+    summaryAsync: Boolean(parsed?.summary_async),
+    duplicate: Boolean(parsed?.duplicate || parsed?.deduped),
   };
 }
 
@@ -529,6 +538,9 @@ export function registerEndpoints(
         file_id: uploaded.fileId,
         key: uploaded.key,
         summary: uploaded.summary,
+        summary_status: uploaded.summaryStatus,
+        summary_async: uploaded.summaryAsync,
+        duplicate: uploaded.duplicate,
       });
     } catch (error) {
       const msg = error instanceof Error ? error.message : "upload failed";

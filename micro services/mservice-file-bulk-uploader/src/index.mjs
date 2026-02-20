@@ -31,7 +31,7 @@ const MIME_BY_EXT = new Map([
 ]);
 
 const POLL_INTERVAL_MS = 2000;
-const FILE_WAIT_TIMEOUT_MS = 10 * 60 * 1000;
+const FILE_WAIT_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_BASE_HOST = "192.168.55.113";
 const LEGACY_BASE_HOST = "192.168.55.73";
 
@@ -171,6 +171,9 @@ async function uploadViaAssistant(uploadUrl, owner, filePath) {
     fileId: Number.isFinite(Number(parsed.file_id)) ? Number(parsed.file_id) : null,
     key: typeof parsed.key === "string" ? parsed.key.trim() : "",
     summary: typeof parsed.summary === "string" ? parsed.summary.trim() : "",
+    summaryStatus: typeof parsed.summary_status === "string" ? parsed.summary_status.trim().toLowerCase() : "",
+    summaryAsync: Boolean(parsed.summary_async),
+    duplicate: Boolean(parsed.duplicate),
   };
 }
 
@@ -321,6 +324,23 @@ async function main() {
     try {
       const uploaded = await uploadViaAssistant(uploadUrl, owner, fullPath);
       console.log(`Uploaded ${display} -> file_id=${uploaded.fileId ?? "unknown"}`);
+      if (uploaded.duplicate) {
+        console.log(`Detected duplicate record for ${display}.`);
+      }
+
+      if (!uploaded.summaryAsync && uploaded.summaryStatus && uploaded.summaryStatus !== "pending") {
+        console.log(`Completed ${display} (status=${uploaded.summaryStatus})`);
+        console.log(`Summary ${display}: ${uploaded.summary || "(no summary)"}`);
+        successCount += 1;
+        continue;
+      }
+
+      if (!uploaded.summaryAsync && uploaded.summaryStatus === "pending") {
+        console.log(`Skipping ${display}: status is pending but no async summary job was started.`);
+        console.log(`Summary ${display}: ${uploaded.summary || "(no summary)"}`);
+        successCount += 1;
+        continue;
+      }
 
       const status = await pollFileCompletion(statusUrl, statusAuth, owner, uploaded.fileId, uploaded.key);
       if (status.status === "completed" || status.status === "skipped") {
