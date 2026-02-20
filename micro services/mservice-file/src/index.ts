@@ -1,5 +1,6 @@
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import { mkdir } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import crypto from 'node:crypto';
@@ -85,6 +86,8 @@ const s3 = new S3Client({
     secretAccessKey: S3_SECRET_KEY,
   },
 });
+const require = createRequire(import.meta.url);
+const PDFDocument = require('pdfkit');
 
 const readyBuckets = new Set<string>();
 type DbContext = {
@@ -297,6 +300,49 @@ function isJpegAttachment(contentType: string, filename: string): boolean {
   const type = String(contentType || '').toLowerCase();
   const name = String(filename || '').toLowerCase();
   return type.includes('image/jpeg') || name.endsWith('.jpg') || name.endsWith('.jpeg');
+}
+
+function isPngAttachment(contentType: string, filename: string): boolean {
+  const type = String(contentType || '').toLowerCase();
+  const name = String(filename || '').toLowerCase();
+  return type.includes('image/png') || name.endsWith('.png');
+}
+
+function toPdfFilename(filename: string): string {
+  const name = String(filename || '').trim();
+  if (!name) {
+    return 'file.pdf';
+  }
+  if (name.toLowerCase().endsWith('.pdf')) {
+    return name;
+  }
+  if (name.toLowerCase().endsWith('.png')) {
+    return `${name.slice(0, -4)}.pdf`;
+  }
+  return `${name}.pdf`;
+}
+
+async function convertPngBufferToPdfBuffer(pngBuffer: Buffer): Promise<Buffer> {
+  const metadata = await sharp(pngBuffer).metadata();
+  const width = Math.max(1, Math.round(Number(metadata.width || 1200)));
+  const height = Math.max(1, Math.round(Number(metadata.height || 1600)));
+  return await new Promise<Buffer>((resolve, reject) => {
+    const doc = new PDFDocument({
+      autoFirstPage: false,
+      margin: 0,
+      compress: true,
+      size: [width, height],
+    });
+    const chunks: Uint8Array[] = [];
+    doc.on('data', (chunk: Buffer | Uint8Array) => {
+      chunks.push(chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk));
+    });
+    doc.on('end', () => resolve(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)))));
+    doc.on('error', reject);
+    doc.addPage({ size: [width, height], margin: 0 });
+    doc.image(pngBuffer, 0, 0, { fit: [width, height], align: 'center', valign: 'center' });
+    doc.end();
+  });
 }
 
 async function toVisionImageBase64(content: Buffer, contentType: string, filename: string): Promise<string> {
@@ -2214,8 +2260,8 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
     const bucket = resolveBucket(req.body?.bucket, owner);
     const providedKey = typeof req.body?.key === 'string' ? req.body.key.trim() : '';
     const dataBase64Raw = typeof req.body?.data_base64 === 'string' ? req.body.data_base64.trim() : '';
-    const contentType = typeof req.body?.content_type === 'string' ? req.body.content_type.trim() : 'application/octet-stream';
-    const filename = sanitizeFilename(typeof req.body?.filename === 'string' ? req.body.filename.trim() : '');
+    let contentType = typeof req.body?.content_type === 'string' ? req.body.content_type.trim() : 'application/octet-stream';
+    let filename = sanitizeFilename(typeof req.body?.filename === 'string' ? req.body.filename.trim() : '');
     const source = typeof req.body?.source === 'string' ? req.body.source.trim() : '';
     const sourceSender = typeof req.body?.source_sender === 'string' ? req.body.source_sender.trim() : '';
     const sourceMessageId =
@@ -2225,7 +2271,6 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
     const callbackUrl = typeof req.body?.callback_url === 'string' ? req.body.callback_url.trim() : '';
     const callbackAuthorization =
       typeof req.body?.callback_authorization === 'string' ? req.body.callback_authorization.trim() : '';
-    const key = toUploadKey({ source: `${owner}/${source || 'ui'}`, filename, providedKey });
     const dataBase64 = dataBase64Raw.startsWith('data:') && dataBase64Raw.includes(',')
       ? dataBase64Raw.split(',').pop() || ''
       : dataBase64Raw;
@@ -2239,8 +2284,22 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
       return;
     }
 
-    const bytes = Buffer.from(dataBase64, 'base64');
-    const contentHash = crypto.createHash('sha256').update(bytes).digest('hex');
+    const originalBytes = Buffer.from(dataBase64, 'base64');
+    let bytes = originalBytes;
+    let convertedPngToPdf = false;
+    if (isPngAttachment(contentType, filename)) {
+      try {
+        bytes = Buffer.from(await convertPngBufferToPdfBuffer(originalBytes));
+        filename = toPdfFilename(filename);
+        contentType = 'application/pdf';
+        convertedPngToPdf = true;
+      } catch (conversionError: any) {
+        // eslint-disable-next-line no-console
+        console.warn(`[mservice-file][upload] png->pdf conversion failed, using original PNG: ${String(conversionError?.message || conversionError)}`);
+      }
+    }
+    const key = toUploadKey({ source: `${owner}/${source || 'ui'}`, filename, providedKey });
+    const contentHash = crypto.createHash('sha256').update(originalBytes).digest('hex');
     const initialContentScope = inferContentScope({
       contentType,
       filename,
@@ -2301,6 +2360,18 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
         if (shouldRetryNaSummary) {
           resolvedSummaryStatus = 'pending';
         }
+        if (convertedPngToPdf && existingId > 0) {
+          await dbCtx.dbRun(
+            `UPDATE files
+             SET filename = ?,
+                 content_type = ?,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = ?;`,
+            filename,
+            contentType,
+            existingId,
+          );
+        }
         if (shouldProcessPdfSummary && ASSISTANT_URL && resolvedSummaryStatus === 'pending' && existingId > 0) {
           summaryAsync = true;
           await dbCtx.dbRun(
@@ -2313,8 +2384,8 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
             existingId,
           );
           const dedupKey = String(existing.s3_key || key);
-          const dedupFilename = String(existing.filename || filename || '');
-          const dedupContentType = String(existing.content_type || contentType || 'application/octet-stream');
+          const dedupFilename = filename || String(existing.filename || '');
+          const dedupContentType = contentType || String(existing.content_type || 'application/octet-stream');
           void runPdfSummaryPipeline({
             dbRun: dbCtx.dbRun,
             owner,
@@ -2341,8 +2412,8 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
           file_id: existingId > 0 ? existingId : null,
           bucket: String(existing.bucket || bucket),
           key: String(existing.s3_key || ''),
-          filename: String(existing.filename || filename || ''),
-          content_type: String(existing.content_type || contentType),
+          filename: String(convertedPngToPdf ? filename : (existing.filename || filename || '')),
+          content_type: String(convertedPngToPdf ? contentType : (existing.content_type || contentType)),
           bytes: Number(existing.size_bytes || bytes.length),
           caption: existing.caption ?? null,
           summary: typeof existing.summary === 'string' ? existing.summary : null,
