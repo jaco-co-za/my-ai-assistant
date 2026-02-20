@@ -2,22 +2,55 @@
 
 set -euo pipefail
 
-REPO_URL="${REPO_URL:-https://github.com/jaco-co-za/whatsapp-web-api-rest.git}"
-BRANCH="${BRANCH:-main}"
-REMOTE="${REMOTE:-origin}"
+MONOREPO_URL="${MONOREPO_URL:-https://github.com/jaco-co-za/my-ai-assistant.git}"
+MONOREPO_BRANCH="${MONOREPO_BRANCH:-main}"
+MONOREPO_DIR="${MONOREPO_DIR:-$HOME/my-ai-assistant}"
+SERVER_RELATIVE_DIR="servers/whatsapp-web-api-rest"
 
 IMAGE="${IMAGE:-jaco/whatsapp-web-api-rest:add-converse-status}"
 CONTAINER_NAME="${CONTAINER_NAME:-whatsapp}"
 AUTH_VOLUME="${AUTH_VOLUME:-whatsapp_auth}"
 APP_PORT="${APP_PORT:-8085}"
 API_AUTH_BEARER_TOKEN="${API_AUTH_BEARER_TOKEN:-}"
-ENV_FILE="${ENV_FILE:-$HOME/whatsapp-web-api-rest/.env}"
-REPO_ENV_FILE="${REPO_ENV_FILE:-$HOME/whatsapp-web-api-rest/.env}"
 WEBHOOK_URLS="${WEBHOOK_URLS:-http://192.168.55.73:3350/receive-msg}"
 WEBHOOK_AUTH_BEARER_TOKEN="${WEBHOOK_AUTH_BEARER_TOKEN:-d755d72d2f4a93ca015eecc9b07a7c61ba9cb9a6e6fab8387e93a03d5078b194}"
 IMAGE_TAG="${IMAGE_TAG:-local}"
 BUILD_SHA="${BUILD_SHA:-dev}"
 AUTHORIZED_WHATSAPP_IDS="${AUTHORIZED_WHATSAPP_IDS:-}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+sync_monorepo() {
+  if ! command -v git >/dev/null 2>&1; then
+    echo "Git is not installed or not in PATH."
+    exit 1
+  fi
+
+  local repo_root=""
+  if repo_root="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null)"; then
+    echo "==> Updating monorepo at '$repo_root' from '$MONOREPO_URL' ($MONOREPO_BRANCH)..." >&2
+    git -C "$repo_root" fetch "$MONOREPO_URL" "$MONOREPO_BRANCH"
+    git -C "$repo_root" checkout "$MONOREPO_BRANCH"
+    git -C "$repo_root" pull --ff-only "$MONOREPO_URL" "$MONOREPO_BRANCH"
+    echo "$repo_root/$SERVER_RELATIVE_DIR"
+    return
+  fi
+
+  if [[ -d "$MONOREPO_DIR/.git" ]]; then
+    echo "==> Updating monorepo at '$MONOREPO_DIR' from '$MONOREPO_URL' ($MONOREPO_BRANCH)..." >&2
+    git -C "$MONOREPO_DIR" fetch "$MONOREPO_URL" "$MONOREPO_BRANCH"
+    git -C "$MONOREPO_DIR" checkout "$MONOREPO_BRANCH"
+    git -C "$MONOREPO_DIR" pull --ff-only "$MONOREPO_URL" "$MONOREPO_BRANCH"
+  else
+    echo "==> Cloning monorepo into '$MONOREPO_DIR'..." >&2
+    git clone --branch "$MONOREPO_BRANCH" "$MONOREPO_URL" "$MONOREPO_DIR"
+  fi
+  echo "$MONOREPO_DIR/$SERVER_RELATIVE_DIR"
+}
+
+DEPLOY_DIR="$(sync_monorepo)"
+cd "$DEPLOY_DIR"
+ENV_FILE="${ENV_FILE:-$DEPLOY_DIR/.env}"
+REPO_ENV_FILE="${REPO_ENV_FILE:-$DEPLOY_DIR/.env}"
 
 if [[ -z "$API_AUTH_BEARER_TOKEN" ]]; then
   if command -v openssl >/dev/null 2>&1; then
@@ -25,14 +58,6 @@ if [[ -z "$API_AUTH_BEARER_TOKEN" ]]; then
   else
     API_AUTH_BEARER_TOKEN="$(cat /proc/sys/kernel/random/uuid | tr -d '-')"
   fi
-fi
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
-
-if [[ ! -d .git ]]; then
-  echo "This script must run from inside the repository directory."
-  exit 1
 fi
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -147,12 +172,6 @@ if (( APP_PORT < 1 || APP_PORT > 65535 )); then
   exit 1
 fi
 echo "==> Effective APP_PORT: $APP_PORT"
-
-echo "==> Syncing branch '$BRANCH' from '$REMOTE'..."
-git remote set-url "$REMOTE" "$REPO_URL"
-git fetch "$REMOTE" "$BRANCH"
-git checkout "$BRANCH"
-git pull --ff-only "$REMOTE" "$BRANCH"
 
 echo "==> Building docker image '$IMAGE'..."
 docker build --pull -t "$IMAGE" .
