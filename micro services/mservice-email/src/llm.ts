@@ -4145,6 +4145,7 @@ export function createLlmHandler({
       if (!sendMail) {
         return { success: false, message: 'Mail sending is not available.' };
       }
+      try {
       let request = extractReplyMailRequest(prompt);
       const replyExtractPrompt = buildReplyExtractPrompt(requestPayload);
       const replyExtractRaw = await sendToAssistant(replyExtractPrompt, { model: 'qwen2.5-coder:14b' });
@@ -4359,6 +4360,15 @@ export function createLlmHandler({
       } catch (err: any) {
         const reason = err?.message ? String(err.message) : 'Unknown error';
         return { success: false, message: `Reply failed: ${reason}` };
+      }
+      } catch (err: any) {
+        // eslint-disable-next-line no-console
+        console.log('Reply flow failed ->', err?.message || String(err));
+        return {
+          success: false,
+          type: 'message',
+          message: 'Unable to create/send reply right now. Please try again shortly.',
+        };
       }
     }
 
