@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_URL="https://github.com/jaco-co-za/hface-voice-to-text.git"
+MONOREPO_URL="${MONOREPO_URL:-https://github.com/jaco-co-za/my-ai-assistant.git}"
+MONOREPO_BRANCH="${MONOREPO_BRANCH:-master}"
+SERVER_RELATIVE_DIR="servers/voice-to-text"
 SHARED_DOCKER_NETWORK="${SHARED_DOCKER_NETWORK:-ai-assistant-network}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -16,13 +18,17 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 
-if [ ! -d ".git" ]; then
-  echo "[error] This folder is not a git repo. Clone $REPO_URL first."
+repo_root="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "$repo_root" ]; then
+  echo "[error] This folder is not inside a git repo. Clone $MONOREPO_URL first."
   exit 1
 fi
 
-echo "[git] Pulling latest from $REPO_URL (main)..."
-git pull "$REPO_URL" main
+echo "[git] Pulling latest from $MONOREPO_URL ($MONOREPO_BRANCH)..."
+git -C "$repo_root" fetch "$MONOREPO_URL" "$MONOREPO_BRANCH"
+git -C "$repo_root" checkout "$MONOREPO_BRANCH"
+git -C "$repo_root" pull --ff-only "$MONOREPO_URL" "$MONOREPO_BRANCH"
+cd "$repo_root/$SERVER_RELATIVE_DIR"
 
 if [ ! -f ".env" ]; then
   cp .env.example .env

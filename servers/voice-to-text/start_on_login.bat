@@ -1,7 +1,9 @@
 @echo off
 setlocal
 
-set "REPO_URL=https://github.com/jaco-co-za/hface-voice-to-text.git"
+set "MONOREPO_URL=https://github.com/jaco-co-za/my-ai-assistant.git"
+set "MONOREPO_BRANCH=master"
+set "SERVER_RELATIVE_DIR=servers/voice-to-text"
 set "SHARED_DOCKER_NETWORK=ai-assistant-network"
 cd /d "%~dp0"
 
@@ -17,17 +19,22 @@ if errorlevel 1 (
   exit /b 1
 )
 
-if not exist ".git" (
-  echo [error] This folder is not a git repo. Clone %REPO_URL% first.
+for /f "delims=" %%i in ('git rev-parse --show-toplevel 2^>nul') do set "REPO_ROOT=%%i"
+if "%REPO_ROOT%"=="" (
+  echo [error] This folder is not inside a git repo. Clone %MONOREPO_URL% first.
   exit /b 1
 )
 
-echo [git] Pulling latest from %REPO_URL% (main)...
-git pull "%REPO_URL%" main
+echo [git] Pulling latest from %MONOREPO_URL% (%MONOREPO_BRANCH%)...
+git -C "%REPO_ROOT%" fetch "%MONOREPO_URL%" "%MONOREPO_BRANCH%"
+git -C "%REPO_ROOT%" checkout "%MONOREPO_BRANCH%"
+git -C "%REPO_ROOT%" pull --ff-only "%MONOREPO_URL%" "%MONOREPO_BRANCH%"
 if errorlevel 1 (
   echo [error] git pull failed.
   exit /b 1
 )
+
+cd /d "%REPO_ROOT%\%SERVER_RELATIVE_DIR%"
 
 if not exist ".env" (
   copy /Y ".env.example" ".env" >nul
