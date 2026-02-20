@@ -2060,6 +2060,14 @@
             if (!raw) {
               return "";
             }
+            const normalizedRaw = raw
+              .replace(/<[^>]+>/g, " ")
+              .replace(/\s+/g, " ")
+              .trim();
+            const summaryPrefixMatch = normalizedRaw.match(/^summary:\s*(.+)$/i);
+            if (summaryPrefixMatch && summaryPrefixMatch[1]) {
+              return sanitizeRememberedAiSummary(summaryPrefixMatch[1]);
+            }
             const lower = raw.toLowerCase();
             if (
               lower === "no reply" ||
@@ -2090,6 +2098,13 @@
               emailId: emailId,
               requestedAt: Date.now(),
             };
+            const targetIndex = emailViewerQueue.findIndex(function (item) {
+              return item && typeof item === "object" && String(item.id || "") === emailId;
+            });
+            if (targetIndex >= 0) {
+              const target = emailViewerQueue[targetIndex];
+              target.summaryStatusMessage = "Generating summary...";
+            }
             setActiveViewerTab("email");
             setEmailViewerBusy(true, "Generating summary...");
             setWaiting("summary generation");
@@ -2608,6 +2623,14 @@
               emailSummaryValue.innerHTML = "";
               emailSummaryValue.appendChild(summaryAttachments);
               if (!card.summaryAvailable) {
+                const statusMessage =
+                  typeof card.summaryStatusMessage === "string" ? card.summaryStatusMessage.trim() : "";
+                if (statusMessage) {
+                  const statusLine = document.createElement("div");
+                  statusLine.className = "email-summary-ai-text";
+                  statusLine.textContent = statusMessage;
+                  emailSummaryValue.appendChild(statusLine);
+                }
                 const actions = document.createElement("div");
                 actions.className = "email-summary-actions";
                 const generateButton = document.createElement("button");
@@ -3158,6 +3181,20 @@
               pushEvent("socket", "connected to " + wsUrl);
             });
             socket.addEventListener("close", function () {
+              if (pendingEmailViewerSummaryRequest) {
+                const pendingId = String(pendingEmailViewerSummaryRequest.emailId || "").trim();
+                const targetIndex = emailViewerQueue.findIndex(function (item) {
+                  return item && typeof item === "object" && String(item.id || "") === pendingId;
+                });
+                if (targetIndex >= 0) {
+                  emailViewerQueue[targetIndex].summaryStatusMessage = "Summary request interrupted: socket disconnected.";
+                  persistEmailViewerQueue();
+                  if (emailViewerQueueIndex === targetIndex) {
+                    renderCurrentEmailViewerEntry();
+                  }
+                }
+                pendingEmailViewerSummaryRequest = null;
+              }
               socket = null;
               setWaiting("reconnect");
               pushEvent("socket", "disconnected");
@@ -3254,6 +3291,12 @@
                       if (generatedSummary) {
                         target.summary = generatedSummary;
                         target.summaryAvailable = true;
+                        target.summaryStatusMessage = "Summary generated.";
+                      } else {
+                        const rawMsg = typeof data.msg === "string" ? data.msg.trim() : "";
+                        target.summaryStatusMessage = rawMsg
+                          ? `Summary not generated: ${rawMsg}`
+                          : "Summary not generated: no response content.";
                       }
                       if (generatedSummary || target.body) {
                         const existingMemory =
@@ -3418,6 +3461,17 @@
                   setEmailViewerBusy(false);
                 }
                 if (pendingEmailViewerSummaryRequest) {
+                  const pendingId = String(pendingEmailViewerSummaryRequest.emailId || "").trim();
+                  const targetIndex = emailViewerQueue.findIndex(function (item) {
+                    return item && typeof item === "object" && String(item.id || "") === pendingId;
+                  });
+                  if (targetIndex >= 0) {
+                    emailViewerQueue[targetIndex].summaryStatusMessage = "Summary request canceled due to invalid response.";
+                    persistEmailViewerQueue();
+                    if (emailViewerQueueIndex === targetIndex) {
+                      renderCurrentEmailViewerEntry();
+                    }
+                  }
                   pendingEmailViewerSummaryRequest = null;
                   setEmailViewerBusy(false);
                 }
