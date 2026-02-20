@@ -7,7 +7,6 @@ import { fileURLToPath } from "node:url";
 const KNOWN_EXTENSIONS = new Set([
   ".jpg",
   ".jpeg",
-  ".png",
   ".webp",
   ".bmp",
   ".tif",
@@ -22,7 +21,6 @@ const IGNORED_EXTENSIONS = new Set([".xls", ".xlsx"]);
 const MIME_BY_EXT = new Map([
   [".jpg", "image/jpeg"],
   [".jpeg", "image/jpeg"],
-  [".png", "image/png"],
   [".webp", "image/webp"],
   [".bmp", "image/bmp"],
   [".tif", "image/tiff"],
@@ -303,7 +301,7 @@ async function main() {
 
   const discovered = await collectFiles(absoluteRoot, recursive);
   if (discovered.length === 0) {
-    console.log("No supported files found (.jpg/.jpeg/.png/.webp/.bmp/.tif/.tiff/.pdf/.doc/.docx).");
+    console.log("No supported files found (.jpg/.jpeg/.webp/.bmp/.tif/.tiff/.pdf/.doc/.docx).");
     return;
   }
 

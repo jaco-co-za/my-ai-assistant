@@ -3,5 +3,6 @@ node_modules
 data
 attachments
 learnings.db
+backups
 dist
 .yarn/install-state.gz

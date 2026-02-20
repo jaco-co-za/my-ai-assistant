@@ -17,3 +17,5 @@ node_modules/
 # Build artifacts
 dist/
 coverage/
+micro services/mss-homeassistant/backups/20260220-130704/cache.db
+micro services/mss-homeassistant/backups/20260220-130704/learnings.db
