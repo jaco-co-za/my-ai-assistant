@@ -3145,8 +3145,11 @@
           }
 
           function connectSocket() {
-            if (socket) {
-              socket.close();
+            if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+              return;
+            }
+            if (socket && socket.readyState === WebSocket.CLOSING) {
+              return;
             }
             socket = new WebSocket(wsUrl);
             socket.addEventListener("open", function () {
@@ -3155,6 +3158,7 @@
               pushEvent("socket", "connected to " + wsUrl);
             });
             socket.addEventListener("close", function () {
+              socket = null;
               setWaiting("reconnect");
               pushEvent("socket", "disconnected");
               if (!reconnectTimer) {

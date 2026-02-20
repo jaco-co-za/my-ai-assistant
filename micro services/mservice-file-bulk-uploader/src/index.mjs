@@ -69,7 +69,11 @@ function normalizeLegacyHost(value) {
   if (!raw) {
     return raw;
   }
-  return raw.split(LEGACY_BASE_HOST).join(DEFAULT_BASE_HOST);
+  return raw
+    .split(LEGACY_BASE_HOST)
+    .join(DEFAULT_BASE_HOST)
+    .replace(/(^|[/:])localhost(?=[:/]|$)/gi, `$1${DEFAULT_BASE_HOST}`)
+    .replace(/(^|[/:])127\.0\.0\.1(?=[:/]|$)/g, `$1${DEFAULT_BASE_HOST}`);
 }
 
 function parseEnvFile(content) {
