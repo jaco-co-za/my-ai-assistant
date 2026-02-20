@@ -2375,6 +2375,7 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
         const existingSummaryStatusRaw = String(existing.summary_status || '').trim().toLowerCase();
         const existingSummaryRaw = String(existing.summary || '').trim();
         const hasNaSummary = existingSummaryRaw.toUpperCase() === 'NA';
+        const hasNoUsableSummary = existingSummaryRaw.length === 0 || hasNaSummary;
         const defaultSummaryStatus = shouldProcessPdfSummary && ASSISTANT_URL ? 'pending' : 'skipped';
         let resolvedSummaryStatus =
           existingSummaryStatusRaw === 'pending' ||
@@ -2398,8 +2399,10 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
           );
           resolvedSummaryStatus = 'skipped';
         }
-        const shouldRetryNaSummary = shouldProcessPdfSummary && hasNaSummary;
-        if (shouldRetryNaSummary) {
+        const shouldRetryFailedSummary =
+          shouldProcessPdfSummary &&
+          (hasNaSummary || (resolvedSummaryStatus === 'failed' && hasNoUsableSummary));
+        if (shouldRetryFailedSummary) {
           resolvedSummaryStatus = 'pending';
         }
         if (convertedPngToPdf && existingId > 0) {
@@ -2418,11 +2421,16 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
           summaryAsync = true;
           await dbCtx.dbRun(
             `UPDATE files
-             SET summary = CASE WHEN UPPER(TRIM(COALESCE(summary, ''))) = 'NA' THEN NULL ELSE summary END,
+                 SET summary = CASE
+                     WHEN UPPER(TRIM(COALESCE(summary, ''))) = 'NA' THEN NULL
+                     WHEN ? = 1 AND TRIM(COALESCE(summary, '')) = '' THEN NULL
+                     ELSE summary
+                   END,
                  summary_status = 'pending',
                  summary_error = NULL,
                  updated_at = CURRENT_TIMESTAMP
              WHERE id = ?;`,
+            resolvedSummaryStatus === 'pending' ? 1 : 0,
             existingId,
           );
           const dedupKey = String(existing.s3_key || key);
