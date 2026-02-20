@@ -2103,7 +2103,11 @@
             });
             if (targetIndex >= 0) {
               const target = emailViewerQueue[targetIndex];
-              target.summaryStatusMessage = "Generating summary...";
+              target.summaryGenerating = true;
+              target.summary = "";
+              target.summaryAvailable = false;
+              target.summaryStatusMessage = "Waiting for backend to generate a new summary...";
+              persistEmailViewerQueue();
             }
             setActiveViewerTab("email");
             setEmailViewerBusy(true, "Generating summary...");
@@ -2565,7 +2569,8 @@
 
             const rememberedSummary = getRememberedEmailSummary(card.id);
             const inlineSummary = typeof card.summary === "string" ? sanitizeRememberedAiSummary(card.summary) : "";
-            const aiSummaryRaw = rememberedSummary || inlineSummary;
+            const isSummaryGenerating = Boolean(card.summaryGenerating);
+            const aiSummaryRaw = isSummaryGenerating ? "" : (rememberedSummary || inlineSummary);
             const hasAiSummary = Boolean(aiSummaryRaw);
             const summaryAttachments = document.createElement("div");
             summaryAttachments.className = "email-summary-meta";
@@ -2622,33 +2627,35 @@
             } else {
               emailSummaryValue.innerHTML = "";
               emailSummaryValue.appendChild(summaryAttachments);
-              if (!card.summaryAvailable) {
-                const statusMessage =
-                  typeof card.summaryStatusMessage === "string" ? card.summaryStatusMessage.trim() : "";
-                if (statusMessage) {
-                  const statusLine = document.createElement("div");
-                  statusLine.className = "email-summary-ai-text";
-                  statusLine.textContent = statusMessage;
-                  emailSummaryValue.appendChild(statusLine);
-                }
-                const actions = document.createElement("div");
-                actions.className = "email-summary-actions";
-                const generateButton = document.createElement("button");
-                generateButton.type = "button";
-                generateButton.className = "attachment-id-tag email-summary-generate-button";
-                const pendingForCurrent =
-                  pendingEmailViewerSummaryRequest &&
-                  String(pendingEmailViewerSummaryRequest.emailId || "") === String(card.id || "");
-                generateButton.disabled = Boolean(pendingForCurrent);
-                generateButton.textContent = pendingForCurrent ? "Generating..." : "Generate AI Summary";
-                generateButton.addEventListener("click", function () {
-                  requestEmailViewerSummaryGeneration(card);
-                  renderCurrentEmailViewerEntry();
-                });
-                actions.appendChild(generateButton);
-                emailSummaryValue.appendChild(actions);
-              }
             }
+            const statusMessage =
+              typeof card.summaryStatusMessage === "string" ? card.summaryStatusMessage.trim() : "";
+            if (statusMessage) {
+              const statusLine = document.createElement("div");
+              statusLine.className = "email-summary-ai-text";
+              statusLine.textContent = statusMessage;
+              emailSummaryValue.appendChild(statusLine);
+            }
+            const actions = document.createElement("div");
+            actions.className = "email-summary-actions";
+            const generateButton = document.createElement("button");
+            generateButton.type = "button";
+            generateButton.className = "attachment-id-tag email-summary-generate-button";
+            const pendingForCurrent =
+              pendingEmailViewerSummaryRequest &&
+              String(pendingEmailViewerSummaryRequest.emailId || "") === String(card.id || "");
+            generateButton.disabled = Boolean(pendingForCurrent);
+            generateButton.textContent = pendingForCurrent
+              ? "Generating..."
+              : hasAiSummary
+                ? "Regenerate AI Summary"
+                : "Generate AI Summary";
+            generateButton.addEventListener("click", function () {
+              requestEmailViewerSummaryGeneration(card);
+              renderCurrentEmailViewerEntry();
+            });
+            actions.appendChild(generateButton);
+            emailSummaryValue.appendChild(actions);
             emailSummaryValue.classList.remove("email-viewer-empty");
             renderEmailViewerQueueNav();
             setActiveViewerTab("email");
@@ -3188,6 +3195,7 @@
                 });
                 if (targetIndex >= 0) {
                   emailViewerQueue[targetIndex].summaryStatusMessage = "Summary request interrupted: socket disconnected.";
+                  emailViewerQueue[targetIndex].summaryGenerating = false;
                   persistEmailViewerQueue();
                   if (emailViewerQueueIndex === targetIndex) {
                     renderCurrentEmailViewerEntry();
@@ -3291,8 +3299,10 @@
                       if (generatedSummary) {
                         target.summary = generatedSummary;
                         target.summaryAvailable = true;
+                        target.summaryGenerating = false;
                         target.summaryStatusMessage = "Summary generated.";
                       } else {
+                        target.summaryGenerating = false;
                         const rawMsg = typeof data.msg === "string" ? data.msg.trim() : "";
                         target.summaryStatusMessage = rawMsg
                           ? `Summary not generated: ${rawMsg}`
@@ -3467,6 +3477,7 @@
                   });
                   if (targetIndex >= 0) {
                     emailViewerQueue[targetIndex].summaryStatusMessage = "Summary request canceled due to invalid response.";
+                    emailViewerQueue[targetIndex].summaryGenerating = false;
                     persistEmailViewerQueue();
                     if (emailViewerQueueIndex === targetIndex) {
                       renderCurrentEmailViewerEntry();
