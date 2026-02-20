@@ -17,7 +17,7 @@ node src/index.mjs "E:\\absolute\\folder\\path" [limit] [Sonja] [recursive]
 
 ## Supported files
 
-- Images: `.jpg`, `.jpeg`, `.webp`, `.bmp`, `.tif`, `.tiff`
+- Images: `.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp`, `.tif`, `.tiff`
 - Docs: `.pdf`, `.doc`, `.docx`
 - Ignored: `.xls`, `.xlsx`
 

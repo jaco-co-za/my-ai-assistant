@@ -96,9 +96,14 @@ type DbContext = {
   dbAll: (sql: string, ...params: unknown[]) => Promise<any[]>;
 };
 const dbContexts = new Map<string, DbContext>();
+const activeSummaryAbortControllers = new Map<string, AbortController>();
 
 type SummaryStatus = 'pending' | 'completed' | 'failed' | 'skipped';
 type ContentScope = 'business' | 'personal';
+
+function buildSummaryJobKey(owner: string, fileId: number): string {
+  return `${normalizeOwner(owner)}:${Math.floor(fileId)}`;
+}
 
 type FileSqlPlan = {
   delivery: 'attach' | 'none';
@@ -585,7 +590,7 @@ async function extractWordTextFromBuffer(buffer: Buffer): Promise<string> {
 
 async function sendSummaryRequestToAssistant(
   payload: Record<string, unknown>,
-  options?: { model?: string; imageBase64?: string; extraGuidance?: string[] },
+  options?: { model?: string; imageBase64?: string; extraGuidance?: string[]; signal?: AbortSignal },
 ): Promise<string | null> {
   if (!ASSISTANT_URL) {
     return null;
@@ -593,6 +598,18 @@ async function sendSummaryRequestToAssistant(
   const authorizationHeader = ASSISTANT_AUTH ? `Bearer ${ASSISTANT_AUTH}` : '';
   const url = ASSISTANT_URL.match(/^https?:\/\//i) ? ASSISTANT_URL : `http://${ASSISTANT_URL}`;
   const controller = new AbortController();
+  const externalSignal = options?.signal;
+  const abortFromExternal = (): void => {
+    if (!controller.signal.aborted) {
+      controller.abort();
+    }
+  };
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      throw new Error('summary pipeline canceled');
+    }
+    externalSignal.addEventListener('abort', abortFromExternal, { once: true });
+  }
   const timeoutMs =
     Number.isFinite(ASSISTANT_TIMEOUT_MS) && ASSISTANT_TIMEOUT_MS > 0 ? ASSISTANT_TIMEOUT_MS : 120000;
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -648,16 +665,25 @@ async function sendSummaryRequestToAssistant(
       return null;
     }
     return raw;
-  } catch {
+  } catch (err: any) {
+    if (externalSignal?.aborted) {
+      throw new Error('summary pipeline canceled');
+    }
+    if (err?.name === 'AbortError' && externalSignal?.aborted) {
+      throw new Error('summary pipeline canceled');
+    }
     return null;
   } finally {
     clearTimeout(timer);
+    if (externalSignal) {
+      externalSignal.removeEventListener('abort', abortFromExternal);
+    }
   }
 }
 
 async function requestParsedSummaryFromAssistant(
   payload: Record<string, unknown>,
-  options?: { model?: string; imageBase64?: string; extraGuidance?: string[] },
+  options?: { model?: string; imageBase64?: string; extraGuidance?: string[]; signal?: AbortSignal },
 ): Promise<{ raw: string; parsedSummary: string }> {
   const raw = await sendSummaryRequestToAssistant(payload, options);
   if (!raw) {
@@ -674,6 +700,7 @@ async function summarizeExtractedTextInChunks(args: {
   basePayload: Record<string, unknown>;
   extractedText: string;
   model: string;
+  signal?: AbortSignal;
 }): Promise<{ raw: string; parsedSummary: string; chunkCount: number }> {
   const chunkSize = toSafeChunkSize(FILE_SUMMARY_CHUNK_CHARS);
   const chunkOverlap = toSafeChunkOverlap(FILE_SUMMARY_CHUNK_OVERLAP_CHARS, chunkSize);
@@ -682,7 +709,7 @@ async function summarizeExtractedTextInChunks(args: {
   if (chunks.length <= 1) {
     const single = await requestParsedSummaryFromAssistant(
       { ...args.basePayload, extracted_text: trimForSummary(args.extractedText, FILE_SUMMARY_TEXT_LIMIT) },
-      { model: args.model },
+      { model: args.model, signal: args.signal },
     );
     return { ...single, chunkCount: 1 };
   }
@@ -698,6 +725,7 @@ async function summarizeExtractedTextInChunks(args: {
     };
     const chunkResult = await requestParsedSummaryFromAssistant(chunkPayload, {
       model: args.model,
+      signal: args.signal,
       extraGuidance: [
         `This is chunk ${i + 1} of ${chunks.length}.`,
         'Summarize only this chunk and keep details factual.',
@@ -715,6 +743,7 @@ async function summarizeExtractedTextInChunks(args: {
   };
   const reduceResult = await requestParsedSummaryFromAssistant(reducePayload, {
     model: args.model,
+    signal: args.signal,
     extraGuidance: [
       'Combine the chunk summaries into one concise final summary.',
       'Preserve key entities, numbers, and document intent.',
@@ -1816,6 +1845,7 @@ function logSummaryOutcome(args: {
 
 async function runPdfSummaryPipeline(args: {
   dbRun: (sql: string, ...params: unknown[]) => Promise<void>;
+  owner: string;
   fileId: number;
   bucket: string;
   key: string;
@@ -1831,6 +1861,9 @@ async function runPdfSummaryPipeline(args: {
   baseMetadata: Record<string, string>;
   content: Buffer;
 }): Promise<void> {
+  const jobKey = buildSummaryJobKey(args.owner, args.fileId);
+  const abortController = new AbortController();
+  activeSummaryAbortControllers.set(jobKey, abortController);
   let extractedPdfText = '';
   let summary: string | null = null;
   let summaryRawResponse = '';
@@ -1899,6 +1932,7 @@ async function runPdfSummaryPipeline(args: {
       return await requestParsedSummaryFromAssistant(payload, {
         model: summaryModel,
         imageBase64: normalizedImageBase64,
+        signal: abortController.signal,
       });
     };
 
@@ -1912,6 +1946,7 @@ async function runPdfSummaryPipeline(args: {
           basePayload: buildSummaryPayload(false, usedPdfImageFallback),
           extractedText: extractedPdfText,
           model: summaryModel,
+          signal: abortController.signal,
         })
         : await requestSummary(useImageSummaryInput);
       summaryRawResponse = firstAttempt.raw;
@@ -2136,6 +2171,8 @@ async function runPdfSummaryPipeline(args: {
         },
       }).catch(() => {});
     }
+  } finally {
+    activeSummaryAbortControllers.delete(jobKey);
   }
 }
 
@@ -2235,6 +2272,8 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
       if (existing?.id) {
         const existingId = Number(existing.id) || 0;
         const existingSummaryStatusRaw = String(existing.summary_status || '').trim().toLowerCase();
+        const existingSummaryRaw = String(existing.summary || '').trim();
+        const hasNaSummary = existingSummaryRaw.toUpperCase() === 'NA';
         const defaultSummaryStatus = shouldProcessPdfSummary && ASSISTANT_URL ? 'pending' : 'skipped';
         let resolvedSummaryStatus =
           existingSummaryStatusRaw === 'pending' ||
@@ -2258,11 +2297,16 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
           );
           resolvedSummaryStatus = 'skipped';
         }
+        const shouldRetryNaSummary = shouldProcessPdfSummary && hasNaSummary;
+        if (shouldRetryNaSummary) {
+          resolvedSummaryStatus = 'pending';
+        }
         if (shouldProcessPdfSummary && ASSISTANT_URL && resolvedSummaryStatus === 'pending' && existingId > 0) {
           summaryAsync = true;
           await dbCtx.dbRun(
             `UPDATE files
-             SET summary_status = 'pending',
+             SET summary = CASE WHEN UPPER(TRIM(COALESCE(summary, ''))) = 'NA' THEN NULL ELSE summary END,
+                 summary_status = 'pending',
                  summary_error = NULL,
                  updated_at = CURRENT_TIMESTAMP
              WHERE id = ?;`,
@@ -2273,6 +2317,7 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
           const dedupContentType = String(existing.content_type || contentType || 'application/octet-stream');
           void runPdfSummaryPipeline({
             dbRun: dbCtx.dbRun,
+            owner,
             fileId: existingId,
             bucket: String(existing.bucket || bucket),
             key: dedupKey,
@@ -2416,6 +2461,7 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
     if (fileId && shouldProcessPdfSummary && ASSISTANT_URL) {
       void runPdfSummaryPipeline({
         dbRun: dbCtx.dbRun,
+        owner,
         fileId,
         bucket,
         key,
@@ -2702,6 +2748,63 @@ app.get('/file/status', authMiddleware, async (req, res) => {
     res.json({ success: true, owner, file: row });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err?.message || 'status query failed' });
+  }
+});
+
+app.post('/file/cancel-summary', authMiddleware, async (req, res) => {
+  try {
+    const owner = normalizeOwner(req.body?.owner ?? req.query.owner);
+    const dbCtx = await getDbContext(owner);
+    const id = Number(req.body?.id ?? req.query.id);
+    const key = typeof req.body?.key === 'string'
+      ? req.body.key.trim()
+      : typeof req.query?.key === 'string'
+        ? req.query.key.trim()
+        : '';
+    if ((!Number.isFinite(id) || id <= 0) && !key) {
+      res.status(400).json({ success: false, message: 'id or key is required' });
+      return;
+    }
+    const row = Number.isFinite(id) && id > 0
+      ? await dbCtx.dbGet(
+        `SELECT id, s3_key, summary_status FROM files WHERE id = ? LIMIT 1;`,
+        Math.floor(id),
+      )
+      : await dbCtx.dbGet(
+        `SELECT id, s3_key, summary_status FROM files WHERE s3_key = ? LIMIT 1;`,
+        key,
+      );
+    if (!row?.id) {
+      res.status(404).json({ success: false, message: 'file record not found' });
+      return;
+    }
+    const fileId = Number(row.id) || 0;
+    const jobKey = buildSummaryJobKey(owner, fileId);
+    const controller = activeSummaryAbortControllers.get(jobKey);
+    if (controller && !controller.signal.aborted) {
+      controller.abort();
+    }
+    await dbCtx.dbRun(
+      `UPDATE files
+       SET summary_status = 'failed',
+           summary_error = ?,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?;`,
+      'summary canceled by user',
+      fileId,
+    );
+    res.json({
+      success: true,
+      owner,
+      canceled: true,
+      id: fileId,
+      key: typeof row.s3_key === 'string' ? row.s3_key : null,
+      had_active_job: Boolean(controller),
+      summary_status: 'failed',
+      summary_error: 'summary canceled by user',
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || 'cancel summary failed' });
   }
 });
 

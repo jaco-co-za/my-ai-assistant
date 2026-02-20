@@ -37,6 +37,15 @@ async function postHomeAssistant(payload: Record<string, unknown>): Promise<stri
   });
 
   const text = await response.text();
+  if (!response.ok) {
+    const parsed = extractJsonObject(text);
+    const detail =
+      (parsed && typeof parsed.error === "string" && parsed.error.trim()) ||
+      (parsed && typeof parsed.message === "string" && parsed.message.trim()) ||
+      text.trim() ||
+      `HTTP ${response.status}`;
+    throw new Error(`Home assistant upstream error (${response.status}): ${detail}`);
+  }
   return text;
 }
 
@@ -365,6 +374,13 @@ export async function handleHomeAssistant(
     const trimmed = responseText.trim();
     try {
       const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      if (parsed?.success === false || typeof parsed?.error === "string") {
+        const detail =
+          (typeof parsed?.error === "string" && parsed.error.trim()) ||
+          (typeof parsed?.message === "string" && parsed.message.trim()) ||
+          "Home assistant request failed";
+        return { success: false, code: 502, msg: `Home assistant failed: ${detail}`, uuid };
+      }
       const confirm = parsed?.confirm === true;
       const confirmMessage = typeof parsed?.message === "string" ? parsed.message.trim() : "";
       const isFollowUp = isFollowUpQuestionFlag(parsed);

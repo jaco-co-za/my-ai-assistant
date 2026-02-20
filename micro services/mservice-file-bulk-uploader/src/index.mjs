@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const KNOWN_EXTENSIONS = new Set([
   ".jpg",
   ".jpeg",
+  ".png",
   ".webp",
   ".bmp",
   ".tif",
@@ -21,6 +22,7 @@ const IGNORED_EXTENSIONS = new Set([".xls", ".xlsx"]);
 const MIME_BY_EXT = new Map([
   [".jpg", "image/jpeg"],
   [".jpeg", "image/jpeg"],
+  [".png", "image/png"],
   [".webp", "image/webp"],
   [".bmp", "image/bmp"],
   [".tif", "image/tiff"],
@@ -31,7 +33,7 @@ const MIME_BY_EXT = new Map([
 ]);
 
 const POLL_INTERVAL_MS = 2000;
-const FILE_WAIT_TIMEOUT_MS = 5 * 60 * 1000;
+const FILE_WAIT_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_BASE_HOST = "192.168.55.113";
 const LEGACY_BASE_HOST = "192.168.55.73";
 
@@ -256,6 +258,40 @@ function isNonFatalSummaryFailure(detail) {
   );
 }
 
+async function cancelSummaryJob(cancelUrl, authHeader, owner, fileId, key) {
+  if (!cancelUrl) {
+    return;
+  }
+  if ((!fileId || fileId <= 0) && !key) {
+    return;
+  }
+  const payload = { owner };
+  if (fileId && fileId > 0) {
+    payload.id = fileId;
+  } else if (key) {
+    payload.key = key;
+  }
+  try {
+    const response = await fetch(cancelUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(authHeader ? { Authorization: authHeader } : {}),
+      },
+      body: JSON.stringify(payload),
+    });
+    const raw = await response.text();
+    if (!response.ok) {
+      console.warn(`Cancel summary request failed (${response.status}): ${raw || "no response body"}`);
+      return;
+    }
+    console.log(`Canceled active summary job for file_id=${fileId || "unknown"} key=${key || "unknown"}.`);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.warn(`Cancel summary request failed: ${msg}`);
+  }
+}
+
 async function main() {
   const args = process.argv.slice(2);
   if (args.length < 1) {
@@ -293,6 +329,7 @@ async function main() {
     "/file/upload",
   );
   const statusUrl = fileUploadUrl ? fileUploadUrl.replace(/\/file\/upload$/i, "/file/status") : "";
+  const cancelSummaryUrl = fileUploadUrl ? fileUploadUrl.replace(/\/file\/upload$/i, "/file/cancel-summary") : "";
   const statusAuth = String(env.FILE_MICRO_SERVICE_AUTH || "").trim() ||
     (String(env.WEBHOOK_BEARER_TOKEN || "").trim() ? `Bearer ${String(env.WEBHOOK_BEARER_TOKEN || "").trim()}` : "");
 
@@ -308,7 +345,7 @@ async function main() {
 
   const discovered = await collectFiles(absoluteRoot, recursive);
   if (discovered.length === 0) {
-    console.log("No supported files found (.jpg/.jpeg/.webp/.bmp/.tif/.tiff/.pdf/.doc/.docx).");
+    console.log("No supported files found (.jpg/.jpeg/.png/.webp/.bmp/.tif/.tiff/.pdf/.doc/.docx).");
     return;
   }
 
@@ -317,16 +354,49 @@ async function main() {
   console.log(`Recursive: ${recursive ? "true (max depth 3)" : "false (root only)"}`);
   console.log(`Upload endpoint: ${uploadUrl}`);
   console.log(`Status endpoint: ${statusUrl}`);
+  console.log(`Cancel endpoint: ${cancelSummaryUrl}`);
   console.log(`Found ${discovered.length} supported files, processing ${selected.length}.`);
 
   let successCount = 0;
   let failedCount = 0;
+  let stopRequested = false;
+  let currentUpload = null;
+  const onInterrupt = async () => {
+    if (stopRequested) {
+      return;
+    }
+    stopRequested = true;
+    console.log("\nCancel requested. Stopping after current operation...");
+    if (currentUpload && (currentUpload.fileId || currentUpload.key)) {
+      await cancelSummaryJob(
+        cancelSummaryUrl,
+        statusAuth,
+        currentUpload.owner,
+        currentUpload.fileId,
+        currentUpload.key,
+      );
+    }
+  };
+  process.on("SIGINT", () => {
+    void onInterrupt();
+  });
+
   for (let i = 0; i < selected.length; i += 1) {
+    if (stopRequested) {
+      console.log("\nStopped by user.");
+      break;
+    }
     const fullPath = selected[i];
     const display = path.basename(fullPath);
     console.log(`\n[${i + 1}/${selected.length}] Uploading ${display}`);
     try {
       const uploaded = await uploadViaAssistant(uploadUrl, owner, fullPath);
+      currentUpload = {
+        owner,
+        fileId: uploaded.fileId,
+        key: uploaded.key,
+        display,
+      };
       console.log(`Uploaded ${display} -> file_id=${uploaded.fileId ?? "unknown"}`);
       if (uploaded.duplicate) {
         console.log(`Detected duplicate record for ${display}.`);
@@ -376,6 +446,8 @@ async function main() {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`ERROR: ${message}`);
       failedCount += 1;
+    } finally {
+      currentUpload = null;
     }
   }
 
