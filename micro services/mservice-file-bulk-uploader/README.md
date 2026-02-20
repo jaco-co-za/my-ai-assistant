@@ -17,7 +17,7 @@ node src/index.mjs "E:\\absolute\\folder\\path" [limit] [Sonja] [recursive]
 
 ## Supported files
 
-- Images: `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`, `.bmp`, `.tif`, `.tiff`
+- Images: `.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp`, `.tif`, `.tiff`
 - Docs: `.pdf`, `.doc`, `.docx`
 - Ignored: `.xls`, `.xlsx`
 
@@ -27,7 +27,8 @@ node src/index.mjs "E:\\absolute\\folder\\path" [limit] [Sonja] [recursive]
 - After each upload, polls file status until summary processing is no longer `pending`.
 - Prints summary text (or `(no summary)`) for each processed file.
 - If status record is removed (for skipped-and-deleted files), uploader treats that as terminal and continues.
-- Stops on first error, except known non-fatal failures (summary parsing/empty-response and unsupported encrypted PDF processing), which are treated as skipped so bulk upload continues.
+- Continues on per-file errors (upload, processing, polling), logs the failure, and moves to the next file.
+- Only startup/config/path errors stop the run before processing starts.
 
 ## Config source
 

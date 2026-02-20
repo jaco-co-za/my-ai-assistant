@@ -794,7 +794,6 @@
               <button type="button" class="shortcut-button" id="homeAssistantShortcut">Home Assistant</button>
               <button type="button" class="shortcut-button" id="showScheduleShortcut">Show My Scheduler</button>
               <button type="button" class="shortcut-button" id="uploadFilesShortcut">Upload My Files</button>
-              <button type="button" class="shortcut-button" id="uploadFilesSonjaShortcut">Upload Sonja Files</button>
               <div class="oauth-callback-panel" id="oauthCallbackPanel">
                 <div class="label">Codex Callback URL</div>
                 <textarea
@@ -939,7 +938,6 @@
           const homeAssistantShortcut = document.getElementById("homeAssistantShortcut");
           const showScheduleShortcut = document.getElementById("showScheduleShortcut");
           const uploadFilesShortcut = document.getElementById("uploadFilesShortcut");
-          const uploadFilesSonjaShortcut = document.getElementById("uploadFilesSonjaShortcut");
           const codexLoginShortcut = document.getElementById("codexLoginShortcut");
           const oauthCallbackPanel = document.getElementById("oauthCallbackPanel");
           const oauthCallbackInput = document.getElementById("oauthCallbackInput");
@@ -3710,10 +3708,6 @@
 
           uploadFilesShortcut.addEventListener("click", function () {
             setUploadMode(!uploadModeEnabled || uploadOwner !== "me", "me");
-          });
-
-          uploadFilesSonjaShortcut.addEventListener("click", function () {
-            setUploadMode(!uploadModeEnabled || uploadOwner !== "sonja", "sonja");
           });
 
           uploadBrowseButton.addEventListener("click", function () {

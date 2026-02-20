@@ -7,6 +7,7 @@ import dotenv from 'dotenv';
 import sqlite3 from 'sqlite3';
 import PDFParser from 'pdf2json';
 import mammoth from 'mammoth';
+import sharp from 'sharp';
 import {
   CreateBucketCommand,
   DeleteObjectCommand,
@@ -285,6 +286,31 @@ function isImageAttachment(contentType: string, filename: string): boolean {
     name.endsWith('.webp') ||
     name.endsWith('.bmp')
   );
+}
+
+function isJpegAttachment(contentType: string, filename: string): boolean {
+  const type = String(contentType || '').toLowerCase();
+  const name = String(filename || '').toLowerCase();
+  return type.includes('image/jpeg') || name.endsWith('.jpg') || name.endsWith('.jpeg');
+}
+
+async function toVisionImageBase64(content: Buffer, contentType: string, filename: string): Promise<string> {
+  if (!isImageAttachment(contentType, filename)) {
+    return content.toString('base64');
+  }
+  if (isJpegAttachment(contentType, filename)) {
+    return content.toString('base64');
+  }
+  try {
+    // Normalize non-JPEG images (gif/png/webp/bmp/tiff) into a single-frame PNG.
+    const normalized = await sharp(content)
+      .flatten({ background: { r: 255, g: 255, b: 255 } })
+      .png()
+      .toBuffer();
+    return normalized.toString('base64');
+  } catch {
+    return content.toString('base64');
+  }
 }
 
 function normalizeContentScope(value: unknown): ContentScope {
@@ -1867,9 +1893,12 @@ async function runPdfSummaryPipeline(args: {
         useImageInput &&
         (args.contentType || '').toLowerCase().startsWith('image/');
       const payload = buildSummaryPayload(useImageInput, usedPdfImageFallback);
+      const normalizedImageBase64 = canAttachImagePayload
+        ? await toVisionImageBase64(args.content, args.contentType, args.filename)
+        : undefined;
       return await requestParsedSummaryFromAssistant(payload, {
         model: summaryModel,
-        imageBase64: canAttachImagePayload ? args.content.toString('base64') : undefined,
+        imageBase64: normalizedImageBase64,
       });
     };
 
@@ -2231,10 +2260,13 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
       's3 upload',
     );
 
+    const skipSummaryForJpeg = isJpegAttachment(contentType, filename);
     const shouldProcessPdfSummary =
-      isPdfAttachment(contentType, filename) || isWordAttachment(contentType, filename) || isImageAttachment(contentType, filename);
+      !skipSummaryForJpeg &&
+      (isPdfAttachment(contentType, filename) || isWordAttachment(contentType, filename) || isImageAttachment(contentType, filename));
     const initialSummaryStatus: SummaryStatus =
       shouldProcessPdfSummary && ASSISTANT_URL ? 'pending' : 'skipped';
+    const initialSummary = skipSummaryForJpeg ? 'NA' : null;
 
     await dbCtx.dbRun(
       `INSERT INTO files (
@@ -2295,7 +2327,7 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
       null,
       0,
       null,
-      null,
+      initialSummary,
       initialContentScope,
       initialSummaryStatus,
       null,
@@ -2318,7 +2350,7 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
       content_type: contentType,
       file_id: fileId,
       caption: caption || null,
-      summary: null,
+      summary: initialSummary,
       content_scope: initialContentScope,
       summary_status: initialSummaryStatus,
       pdf_text_length: 0,

@@ -238,6 +238,10 @@ onBeforeUnmount(() => {
     <section class="loading-panel" v-if="loading">
       <div class="loading-art">
         <img :src="loadingGraphic" alt="Searching files" />
+        <svg class="loading-border-svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+          <rect class="loading-border-track" x="1" y="1" width="98" height="98" rx="8" ry="8" />
+          <rect class="loading-border-runner" x="1" y="1" width="98" height="98" rx="8" ry="8" />
+        </svg>
       </div>
       <div class="loading-text">Searching files...</div>
     </section>
