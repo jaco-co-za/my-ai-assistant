@@ -3,7 +3,7 @@
 set -euo pipefail
 
 MONOREPO_URL="${MONOREPO_URL:-https://github.com/jaco-co-za/my-ai-assistant.git}"
-MONOREPO_BRANCH="${MONOREPO_BRANCH:-main}"
+MONOREPO_BRANCH="${MONOREPO_BRANCH:-master}"
 MONOREPO_DIR="${MONOREPO_DIR:-$HOME/my-ai-assistant}"
 SERVER_RELATIVE_DIR="servers/whatsapp-web-api-rest"
 SHARED_DOCKER_NETWORK="${SHARED_DOCKER_NETWORK:-ai-assistant-network}"
@@ -13,7 +13,7 @@ CONTAINER_NAME="${CONTAINER_NAME:-whatsapp}"
 AUTH_VOLUME="${AUTH_VOLUME:-whatsapp_auth}"
 APP_PORT="${APP_PORT:-8085}"
 API_AUTH_BEARER_TOKEN="${API_AUTH_BEARER_TOKEN:-}"
-WEBHOOK_URLS="${WEBHOOK_URLS:-http://192.168.55.73:3350/receive-msg}"
+WEBHOOK_URLS="${WEBHOOK_URLS:-http://localhost:3350/receive-msg}"
 WEBHOOK_AUTH_BEARER_TOKEN="${WEBHOOK_AUTH_BEARER_TOKEN:-d755d72d2f4a93ca015eecc9b07a7c61ba9cb9a6e6fab8387e93a03d5078b194}"
 IMAGE_TAG="${IMAGE_TAG:-local}"
 BUILD_SHA="${BUILD_SHA:-dev}"
