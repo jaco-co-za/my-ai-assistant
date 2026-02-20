@@ -3,6 +3,7 @@ dist
 .git
 .gitignore
 .env
+.vscode
+.playwright
+.playwright-cli
 data
-attachments
-*.db

@@ -5,6 +5,7 @@ MONOREPO_URL="${MONOREPO_URL:-https://github.com/jaco-co-za/my-ai-assistant.git}
 MONOREPO_BRANCH="${MONOREPO_BRANCH:-main}"
 MONOREPO_DIR="${MONOREPO_DIR:-$HOME/my-ai-assistant}"
 SERVER_RELATIVE_DIR="servers/s3-local"
+SHARED_DOCKER_NETWORK="${SHARED_DOCKER_NETWORK:-ai-assistant-network}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 sync_monorepo() {
@@ -52,6 +53,10 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! docker network inspect "$SHARED_DOCKER_NETWORK" >/dev/null 2>&1; then
+  docker network create "$SHARED_DOCKER_NETWORK" >/dev/null
+fi
+
 mkdir -p "$DATA_DIR"
 
 if [[ ! -f "$ENV_FILE" ]]; then
@@ -86,6 +91,7 @@ docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 docker run -d \
   --name "$CONTAINER_NAME" \
   --restart unless-stopped \
+  --network "$SHARED_DOCKER_NETWORK" \
   --env-file "$ENV_FILE" \
   -p "$HOST_BIND_IP:$APP_PORT:9000" \
   -p "$HOST_BIND_IP:$CONSOLE_PORT:9001" \

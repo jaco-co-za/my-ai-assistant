@@ -5,6 +5,7 @@ MONOREPO_URL="${MONOREPO_URL:-https://github.com/jaco-co-za/my-ai-assistant.git}
 MONOREPO_BRANCH="${MONOREPO_BRANCH:-main}"
 MONOREPO_DIR="${MONOREPO_DIR:-$HOME/my-ai-assistant}"
 SERVER_RELATIVE_DIR="servers/mysql-docker"
+SHARED_DOCKER_NETWORK="${SHARED_DOCKER_NETWORK:-ai-assistant-network}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${ENV_FILE:-$ROOT_DIR/.env}"
 ENV_EXAMPLE_FILE="$ROOT_DIR/.env.example"
@@ -57,6 +58,10 @@ elif command -v docker-compose >/dev/null 2>&1; then
 else
   echo "docker compose (or docker-compose) is required."
   exit 1
+fi
+
+if ! docker network inspect "$SHARED_DOCKER_NETWORK" >/dev/null 2>&1; then
+  docker network create "$SHARED_DOCKER_NETWORK" >/dev/null
 fi
 
 if [[ ! -f "$ENV_FILE" ]]; then

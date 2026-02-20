@@ -2,6 +2,7 @@
 setlocal
 
 set "REPO_URL=https://github.com/jaco-co-za/hface-voice-to-text.git"
+set "SHARED_DOCKER_NETWORK=ai-assistant-network"
 cd /d "%~dp0"
 
 where git >nul 2>&1
@@ -30,6 +31,11 @@ if errorlevel 1 (
 
 if not exist ".env" (
   copy /Y ".env.example" ".env" >nul
+)
+
+docker network inspect "%SHARED_DOCKER_NETWORK%" >nul 2>&1
+if errorlevel 1 (
+  docker network create "%SHARED_DOCKER_NETWORK%" >nul
 )
 
 echo [docker] Building and starting whisper-service...

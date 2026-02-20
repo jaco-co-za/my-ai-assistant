@@ -34,6 +34,8 @@ const MIME_BY_EXT = new Map([
 
 const POLL_INTERVAL_MS = 2000;
 const FILE_WAIT_TIMEOUT_MS = 10 * 60 * 1000;
+const DEFAULT_BASE_HOST = "192.168.55.113";
+const LEGACY_BASE_HOST = "192.168.55.73";
 
 function printUsage() {
   console.log("Usage: node src/index.mjs <absolute-path> [limit=1] [Sonja] [recursive=true|false]");
@@ -62,6 +64,14 @@ function ensureUrl(value, fallbackPath = "") {
     return withScheme;
   }
   return `${withScheme.replace(/\/+$/, "")}${fallbackPath}`;
+}
+
+function normalizeLegacyHost(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return raw;
+  }
+  return raw.split(LEGACY_BASE_HOST).join(DEFAULT_BASE_HOST);
 }
 
 function parseEnvFile(content) {
@@ -269,9 +279,14 @@ async function main() {
   const envContent = await fs.readFile(aiEnvPath, "utf8");
   const env = parseEnvFile(envContent);
 
-  const baseHost = String(env.BASE_URL || "localhost").trim() || "localhost";
-  const uploadUrl = ensureUrl(env.AI_ASSISTANT_UI_UPLOAD_URL || `http://${baseHost}:8599/upload-file`);
-  const fileUploadUrl = ensureUrl(env.FILE_MICRO_SERVICE_URL || "", "/file/upload");
+  const baseHost = normalizeLegacyHost(String(env.BASE_URL || DEFAULT_BASE_HOST).trim() || DEFAULT_BASE_HOST);
+  const uploadUrl = ensureUrl(
+    normalizeLegacyHost(env.AI_ASSISTANT_UI_UPLOAD_URL || `http://${baseHost}:8599/upload-file`),
+  );
+  const fileUploadUrl = ensureUrl(
+    normalizeLegacyHost(env.FILE_MICRO_SERVICE_URL || `http://${baseHost}:3224/file/upload`),
+    "/file/upload",
+  );
   const statusUrl = fileUploadUrl ? fileUploadUrl.replace(/\/file\/upload$/i, "/file/status") : "";
   const statusAuth = String(env.FILE_MICRO_SERVICE_AUTH || "").trim() ||
     (String(env.WEBHOOK_BEARER_TOKEN || "").trim() ? `Bearer ${String(env.WEBHOOK_BEARER_TOKEN || "").trim()}` : "");

@@ -2,6 +2,7 @@
 set -euo pipefail
 
 REPO_URL="https://github.com/jaco-co-za/hface-voice-to-text.git"
+SHARED_DOCKER_NETWORK="${SHARED_DOCKER_NETWORK:-ai-assistant-network}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
@@ -25,6 +26,10 @@ git pull "$REPO_URL" main
 
 if [ ! -f ".env" ]; then
   cp .env.example .env
+fi
+
+if ! docker network inspect "$SHARED_DOCKER_NETWORK" >/dev/null 2>&1; then
+  docker network create "$SHARED_DOCKER_NETWORK" >/dev/null
 fi
 
 echo "[docker] Building and starting whisper-service..."

@@ -11,6 +11,13 @@ services:
     volumes:
       - whisper_hf_cache:/root/.cache/huggingface
     restart: unless-stopped
+    networks:
+      - ai-assistant-network
 
 volumes:
   whisper_hf_cache:
+
+networks:
+  ai-assistant-network:
+    name: ai-assistant-network
+    external: true

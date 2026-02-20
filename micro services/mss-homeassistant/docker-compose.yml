@@ -1,0 +1,18 @@
+services:
+  mss-homeassistant:
+    container_name: ms-hass
+    build: .
+    env_file:
+      - .env
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:${PORT:-3223}:${PORT:-3223}"
+    volumes:
+      - ./data:/app/data
+    networks:
+      - ai-assistant-network
+
+networks:
+  ai-assistant-network:
+    name: ai-assistant-network
+    external: true

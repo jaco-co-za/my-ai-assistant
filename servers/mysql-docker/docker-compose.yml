@@ -22,3 +22,10 @@ services:
       interval: 5s
       timeout: 5s
       retries: 30
+    networks:
+      - ai-assistant-network
+
+networks:
+  ai-assistant-network:
+    name: ai-assistant-network
+    external: true

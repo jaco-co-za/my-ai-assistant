@@ -1,0 +1,19 @@
+services:
+  mservice-email:
+    container_name: ms-email
+    build: .
+    env_file:
+      - .env
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:3222:3222"
+    volumes:
+      - ./data:/app/data
+      - ./attachments:/app/attachments
+    networks:
+      - ai-assistant-network
+
+networks:
+  ai-assistant-network:
+    name: ai-assistant-network
+    external: true

@@ -6,6 +6,7 @@ MONOREPO_URL="${MONOREPO_URL:-https://github.com/jaco-co-za/my-ai-assistant.git}
 MONOREPO_BRANCH="${MONOREPO_BRANCH:-main}"
 MONOREPO_DIR="${MONOREPO_DIR:-$HOME/my-ai-assistant}"
 SERVER_RELATIVE_DIR="servers/whatsapp-web-api-rest"
+SHARED_DOCKER_NETWORK="${SHARED_DOCKER_NETWORK:-ai-assistant-network}"
 
 IMAGE="${IMAGE:-jaco/whatsapp-web-api-rest:add-converse-status}"
 CONTAINER_NAME="${CONTAINER_NAME:-whatsapp}"
@@ -63,6 +64,10 @@ fi
 if ! command -v docker >/dev/null 2>&1; then
   echo "Docker is not installed or not in PATH."
   exit 1
+fi
+
+if ! docker network inspect "$SHARED_DOCKER_NETWORK" >/dev/null 2>&1; then
+  docker network create "$SHARED_DOCKER_NETWORK" >/dev/null
 fi
 
 ensure_env_value() {
@@ -182,6 +187,7 @@ docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 docker run -d \
   --name "$CONTAINER_NAME" \
   --restart unless-stopped \
+  --network "$SHARED_DOCKER_NETWORK" \
   --env-file "$ENV_FILE" \
   -p "$APP_PORT:$APP_PORT" \
   -v "$AUTH_VOLUME:/app/auth_info" \

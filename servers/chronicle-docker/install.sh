@@ -5,6 +5,7 @@ MONOREPO_URL="${MONOREPO_URL:-https://github.com/jaco-co-za/my-ai-assistant.git}
 MONOREPO_BRANCH="${MONOREPO_BRANCH:-main}"
 MONOREPO_DIR="${MONOREPO_DIR:-$HOME/my-ai-assistant}"
 SERVER_RELATIVE_DIR="servers/chronicle-docker"
+SHARED_DOCKER_NETWORK="${SHARED_DOCKER_NETWORK:-ai-assistant-network}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 sync_monorepo() {
@@ -61,10 +62,19 @@ else
   exit 1
 fi
 
+if ! docker network inspect "$SHARED_DOCKER_NETWORK" >/dev/null 2>&1; then
+  docker network create "$SHARED_DOCKER_NETWORK" >/dev/null
+fi
+
 cd "$REPO_DIR"
 
 # (Re)start Cronicle
 $COMPOSE down
 $COMPOSE up -d
+
+CRONICLE_CONTAINER="$(docker ps --format '{{.Names}}' --filter 'ancestor=soulteary/cronicle:0.9.80' | head -n1 || true)"
+if [ -n "$CRONICLE_CONTAINER" ]; then
+  docker network connect "$SHARED_DOCKER_NETWORK" "$CRONICLE_CONTAINER" >/dev/null 2>&1 || true
+fi
 
 echo "Cronicle is starting. Open: http://localhost:3012"

@@ -1,0 +1,20 @@
+services:
+  ai-assistant:
+    container_name: ai-assistant
+    build: .
+    env_file:
+      - .env
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:${WEBHOOK_PORT:-3350}:${WEBHOOK_PORT:-3350}"
+      - "0.0.0.0:8599:8599"
+    volumes:
+      - ./data:/app/data
+      - ./.codex:/app/.codex
+    networks:
+      - ai-assistant-network
+
+networks:
+  ai-assistant-network:
+    name: ai-assistant-network
+    external: true

@@ -4,7 +4,7 @@ set -euo pipefail
 MONOREPO_URL="${MONOREPO_URL:-https://github.com/jaco-co-za/my-ai-assistant.git}"
 MONOREPO_BRANCH="${MONOREPO_BRANCH:-master}"
 MONOREPO_DIR="${MONOREPO_DIR:-$HOME/my-ai-assistant}"
-SERVICE_RELATIVE_DIR="micro services/mss-homeassistant"
+SERVICE_RELATIVE_DIR="micro services/sonja-file-ui"
 SHARED_DOCKER_NETWORK="${SHARED_DOCKER_NETWORK:-ai-assistant-network}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -59,9 +59,7 @@ if [ ! -f ".env" ] && [ -f ".env.example" ]; then
   cp .env.example .env
 fi
 
-mkdir -p data
-
 "${COMPOSE[@]}" down --remove-orphans || true
 "${COMPOSE[@]}" up -d --build
 
-echo "mss-homeassistant is starting on http://localhost:${PORT:-3223}"
+echo "sonja-file-ui is starting on http://localhost:${VITE_PORT:-5188}"

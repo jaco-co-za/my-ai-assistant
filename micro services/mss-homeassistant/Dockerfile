@@ -1,16 +1,24 @@
-FROM node:20-alpine
+FROM node:22-bookworm-slim AS builder
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci
+
+COPY . .
+RUN npm run build
+
+FROM node:22-bookworm-slim
 
 WORKDIR /app
 ENV NODE_ENV=production
 
-RUN apk add --no-cache sqlite
-
-COPY package.json package-lock.json ./
+COPY package*.json ./
 RUN npm ci --omit=dev
 
-COPY dist ./dist
-COPY prompts ./prompts
-COPY data ./data
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/prompts ./prompts
+RUN mkdir -p data
 
 EXPOSE 3223
 
