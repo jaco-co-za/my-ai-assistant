@@ -1,0 +1,6 @@
+.venv/
+logs/
+.env
+query
+__pycache__/
+*.pyc

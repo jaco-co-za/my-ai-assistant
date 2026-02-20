@@ -1,0 +1,16 @@
+services:
+  whisper-service:
+    container_name: whisper-service
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "0.0.0.0:3221:3221"
+    env_file:
+      - .env
+    volumes:
+      - whisper_hf_cache:/root/.cache/huggingface
+    restart: unless-stopped
+
+volumes:
+  whisper_hf_cache:
