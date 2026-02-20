@@ -499,7 +499,12 @@ function toSafeMaxChunks(value: number): number {
   return Math.floor(value);
 }
 
-function splitTextIntoChunks(text: string, chunkSize: number, overlap: number, maxChunks: number): string[] {
+function splitTextIntoChunks(
+  text: string,
+  chunkSize: number,
+  overlap: number,
+  maxChunks: number = Number.MAX_SAFE_INTEGER,
+): string[] {
   const normalized = String(text || '').trim();
   if (!normalized) {
     return [];
@@ -750,8 +755,8 @@ async function summarizeExtractedTextInChunks(args: {
 }): Promise<{ raw: string; parsedSummary: string; chunkCount: number }> {
   const chunkSize = toSafeChunkSize(FILE_SUMMARY_CHUNK_CHARS);
   const chunkOverlap = toSafeChunkOverlap(FILE_SUMMARY_CHUNK_OVERLAP_CHARS, chunkSize);
-  const maxChunks = toSafeMaxChunks(FILE_SUMMARY_MAX_CHUNKS);
-  const chunks = splitTextIntoChunks(args.extractedText, chunkSize, chunkOverlap, maxChunks);
+  const maxChunksPerPass = toSafeMaxChunks(FILE_SUMMARY_MAX_CHUNKS);
+  const chunks = splitTextIntoChunks(args.extractedText, chunkSize, chunkOverlap, Number.MAX_SAFE_INTEGER);
   if (chunks.length <= 1) {
     const single = await requestParsedSummaryFromAssistant(
       { ...args.basePayload, extracted_text: trimForSummary(args.extractedText, FILE_SUMMARY_TEXT_LIMIT) },
@@ -780,22 +785,59 @@ async function summarizeExtractedTextInChunks(args: {
     chunkSummaries.push(chunkResult.parsedSummary);
   }
 
-  const mergedChunkText = chunkSummaries.map((value, index) => `Chunk ${index + 1}: ${value}`).join('\n');
-  const reducePayload = {
-    ...args.basePayload,
-    extracted_text: trimForSummary(mergedChunkText, FILE_SUMMARY_TEXT_LIMIT),
-    summary_strategy: 'chunk-reduce',
-    chunk_total: chunks.length,
+  const reduceOnce = async (
+    summaries: string[],
+    strategy: string,
+    pass: number,
+  ): Promise<{ raw: string; parsedSummary: string }> => {
+    const mergedChunkText = summaries.map((value, index) => `Chunk ${index + 1}: ${value}`).join('\n');
+    const reducePayload = {
+      ...args.basePayload,
+      extracted_text: trimForSummary(mergedChunkText, FILE_SUMMARY_TEXT_LIMIT),
+      summary_strategy: strategy,
+      chunk_total: summaries.length,
+      reduce_pass: pass,
+    };
+    return await requestParsedSummaryFromAssistant(reducePayload, {
+      model: args.model,
+      signal: args.signal,
+      extraGuidance: [
+        'Combine the chunk summaries into one concise final summary.',
+        'Preserve key entities, numbers, and document intent.',
+      ],
+    });
   };
-  const reduceResult = await requestParsedSummaryFromAssistant(reducePayload, {
-    model: args.model,
-    signal: args.signal,
-    extraGuidance: [
-      'Combine the chunk summaries into one concise final summary.',
-      'Preserve key entities, numbers, and document intent.',
-    ],
-  });
-  return { ...reduceResult, chunkCount: chunks.length };
+
+  let pass = 1;
+  let working = chunkSummaries.slice();
+  let latestRaw = '';
+  let latestSummary = '';
+  while (working.length > maxChunksPerPass) {
+    const nextRound: string[] = [];
+    for (let start = 0; start < working.length; start += maxChunksPerPass) {
+      const group = working.slice(start, start + maxChunksPerPass);
+      if (group.length === 1) {
+        nextRound.push(group[0]);
+        continue;
+      }
+      const reduced = await reduceOnce(group, 'chunk-reduce-pass', pass);
+      latestRaw = reduced.raw;
+      latestSummary = reduced.parsedSummary;
+      nextRound.push(reduced.parsedSummary);
+    }
+    working = nextRound;
+    pass += 1;
+  }
+
+  if (working.length === 1) {
+    return {
+      raw: latestRaw || JSON.stringify({ ai_summary: working[0] }),
+      parsedSummary: latestSummary || working[0],
+      chunkCount: chunks.length,
+    };
+  }
+  const finalReduce = await reduceOnce(working, 'chunk-reduce', pass);
+  return { ...finalReduce, chunkCount: chunks.length };
 }
 
 function parseAssistantJsonContent(raw: string): Record<string, unknown> | null {
