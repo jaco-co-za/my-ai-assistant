@@ -3818,50 +3818,51 @@ export function createLlmHandler({
     }
 
     if (isReadMailRequest(prompt)) {
-      const resolvedId = await resolveReadMailTargetId(dbGet, prompt);
-      if (!resolvedId) {
-        return { success: false, type: 'message', message: 'Please provide an email id or a clear latest/oldest reference to read.' };
-      }
-      const emailId = resolvedId;
-      const row = await dbGet(
-        `SELECT email_messages.id as id,
-                email_messages.from_raw as from_raw,
-                email_messages.to_raw as to_raw,
-                email_messages.cc_raw as cc_raw,
-                email_messages.bcc_raw as bcc_raw,
-                email_messages.subject as subject,
-                email_messages.received_at as received_at,
-                email_messages.text_body as text_body,
-                email_messages.html_body as html_body,
-                folders.name as folder_name,
-                folders.path as folder_path
-         FROM email_messages
-         INNER JOIN folders ON email_messages.folder_id = folders.id
-         WHERE email_messages.id = ?
-         LIMIT 1;`,
-        emailId,
-      );
-      if (!row?.id) {
-        return { success: false, type: 'message', message: `Email ${emailId} was not found.` };
-      }
-      const attachmentRows = await dbAll(
-        `SELECT id, email_id, part, filename, content_type, size, storage_path
-         FROM email_attachments
-         WHERE email_id = ?
-         ORDER BY id ASC;`,
-        emailId,
-      );
-      const attachments = attachmentRows
-        .map((attachment) => ({
-          id: Number(attachment?.id),
-          email_id: Number(attachment?.email_id),
-          part: attachment?.part ? String(attachment.part) : null,
-          filename: attachment?.filename ? String(attachment.filename) : null,
-          content_type: attachment?.content_type ? String(attachment.content_type) : null,
-          size: Number.isFinite(Number(attachment?.size)) ? Number(attachment.size) : null,
-          storage_path: attachment?.storage_path ? String(attachment.storage_path) : null,
-        }))
-        .filter((attachment) => Number.isFinite(attachment.id) && attachment.id > 0);
+      try {
+        const resolvedId = await resolveReadMailTargetId(dbGet, prompt);
+        if (!resolvedId) {
+          return { success: false, type: 'message', message: 'Please provide an email id or a clear latest/oldest reference to read.' };
+        }
+        const emailId = resolvedId;
+        const row = await dbGet(
+          `SELECT email_messages.id as id,
+                  email_messages.from_raw as from_raw,
+                  email_messages.to_raw as to_raw,
+                  email_messages.cc_raw as cc_raw,
+                  email_messages.bcc_raw as bcc_raw,
+                  email_messages.subject as subject,
+                  email_messages.received_at as received_at,
+                  email_messages.text_body as text_body,
+                  email_messages.html_body as html_body,
+                  folders.name as folder_name,
+                  folders.path as folder_path
+           FROM email_messages
+           INNER JOIN folders ON email_messages.folder_id = folders.id
+           WHERE email_messages.id = ?
+           LIMIT 1;`,
+          emailId,
+        );
+        if (!row?.id) {
+          return { success: false, type: 'message', message: `Email ${emailId} was not found.` };
+        }
+        const attachmentRows = await dbAll(
+          `SELECT id, email_id, part, filename, content_type, size, storage_path
+           FROM email_attachments
+           WHERE email_id = ?
+           ORDER BY id ASC;`,
+          emailId,
+        );
+        const attachments = attachmentRows
+          .map((attachment) => ({
+            id: Number(attachment?.id),
+            email_id: Number(attachment?.email_id),
+            part: attachment?.part ? String(attachment.part) : null,
+            filename: attachment?.filename ? String(attachment.filename) : null,
+            content_type: attachment?.content_type ? String(attachment.content_type) : null,
+            size: Number.isFinite(Number(attachment?.size)) ? Number(attachment.size) : null,
+            storage_path: attachment?.storage_path ? String(attachment.storage_path) : null,
+          }))
+          .filter((attachment) => Number.isFinite(attachment.id) && attachment.id > 0);
 
       const pdfExtractions: Array<{ attachment_id: number; filename: string | null; extracted_text: string }> = [];
       for (const attachment of attachments) {
@@ -4041,27 +4042,36 @@ export function createLlmHandler({
             `<p><strong>PDF Sections:</strong> ${escapeHtml(pdfSummary)}</p>`,
             '</article>',
           ].join('\n');
-      return {
-        success: true,
-        type: 'message',
-        message: summaryOutputMessage,
-        email: structuredPayload.email,
-        email_id: structuredPayload.email_id,
-        from: structuredPayload.from,
-        to: structuredPayload.to,
-        subject: structuredPayload.subject,
-        received_at: structuredPayload.received_at,
-        folder: structuredPayload.folder,
-        subfolder: structuredPayload.subfolder,
-        body_text: structuredPayload.body_text,
-        body_html: structuredPayload.body_html,
-        ai_summary: structuredPayload.ai_summary,
-        summary_available: structuredPayload.summary_available,
-        attachment_details: structuredPayload.attachment_details,
-        summary: structuredPayload.summary,
-        pdf_sections: structuredPayload.pdf_sections,
-        ui_actions: summaryUiActions,
-      };
+        return {
+          success: true,
+          type: 'message',
+          message: summaryOutputMessage,
+          email: structuredPayload.email,
+          email_id: structuredPayload.email_id,
+          from: structuredPayload.from,
+          to: structuredPayload.to,
+          subject: structuredPayload.subject,
+          received_at: structuredPayload.received_at,
+          folder: structuredPayload.folder,
+          subfolder: structuredPayload.subfolder,
+          body_text: structuredPayload.body_text,
+          body_html: structuredPayload.body_html,
+          ai_summary: structuredPayload.ai_summary,
+          summary_available: structuredPayload.summary_available,
+          attachment_details: structuredPayload.attachment_details,
+          summary: structuredPayload.summary,
+          pdf_sections: structuredPayload.pdf_sections,
+          ui_actions: summaryUiActions,
+        };
+      } catch (err: any) {
+        // eslint-disable-next-line no-console
+        console.log('Read email flow failed ->', err?.message || String(err));
+        return {
+          success: false,
+          type: 'message',
+          message: 'Unable to read this email right now. Please try again shortly.',
+        };
+      }
     }
 
     if (isShowAttachmentsForEmailRequest(prompt)) {
