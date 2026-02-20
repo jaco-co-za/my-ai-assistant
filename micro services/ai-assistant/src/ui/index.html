@@ -2096,7 +2096,7 @@
             socket.send(
               JSON.stringify({
                 type: "message",
-                message: "read email " + emailId,
+                message: "summarize email " + emailId,
                 requestId: `evs-${Math.random().toString(36).slice(2)}`,
                 skipCache: true,
               }),
