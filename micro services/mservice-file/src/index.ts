@@ -59,8 +59,11 @@ const SONJA_REFINEMENT_MAX_REVIEW_CHUNKS = Number.parseInt(process.env.SONJA_REF
 const SONJA_REFINEMENT_MAX_ROWS = Number.parseInt(process.env.SONJA_REFINEMENT_MAX_ROWS || '120', 10);
 const ASSISTANT_TIMEOUT_MS = Number.parseInt(process.env.ASSISTANT_TIMEOUT_MS || '120000', 10);
 const FILE_QUERY_ASSISTANT_TIMEOUT_MS = Number.parseInt(process.env.FILE_QUERY_ASSISTANT_TIMEOUT_MS || '30000', 10);
+const FILE_QUERY_ASSISTANT_RETRIES = Number.parseInt(process.env.FILE_QUERY_ASSISTANT_RETRIES || '2', 10);
+const FILE_QUERY_ASSISTANT_RETRY_DELAY_MS = Number.parseInt(process.env.FILE_QUERY_ASSISTANT_RETRY_DELAY_MS || '1200', 10);
 const FILE_QUERY_USE_ASSISTANT = String(process.env.FILE_QUERY_USE_ASSISTANT || 'false').toLowerCase() === 'true';
-const SONJA_REFINEMENT_ENABLED = String(process.env.SONJA_REFINEMENT_ENABLED || 'false').toLowerCase() === 'true';
+const SONJA_REFINEMENT_ENABLED = String(process.env.SONJA_REFINEMENT_ENABLED || 'true').toLowerCase() === 'true';
+const SONJA_STRICT_LLM_COMPLETION = String(process.env.SONJA_STRICT_LLM_COMPLETION || 'true').toLowerCase() === 'true';
 const FILE_EXTRACTION_TIMEOUT_MS = Number.parseInt(process.env.FILE_EXTRACTION_TIMEOUT_MS || '120000', 10);
 const S3_OPERATION_TIMEOUT_MS = Number.parseInt(process.env.S3_OPERATION_TIMEOUT_MS || '60000', 10);
 const FILE_SUMMARY_TEXT_LIMIT = Number.parseInt(process.env.FILE_SUMMARY_TEXT_LIMIT || '12000', 10);
@@ -908,6 +911,14 @@ function normalizeConfidence(value: unknown): number {
   return Math.max(0, Math.min(100, Math.round(raw)));
 }
 
+async function sleep(ms: number): Promise<void> {
+  const waitMs = Number.isFinite(ms) ? Math.max(0, Math.floor(ms)) : 0;
+  if (waitMs <= 0) {
+    return;
+  }
+  await new Promise((resolve) => setTimeout(resolve, waitMs));
+}
+
 function buildSonjaReviewChunks(rows: any[]): string[] {
   const maxChars = Math.max(2000, SONJA_REFINEMENT_REVIEW_CHARS);
   const maxChunks = Math.max(1, SONJA_REFINEMENT_MAX_REVIEW_CHUNKS);
@@ -950,13 +961,18 @@ async function sendSonjaReviewRequestToAssistant(payload: Record<string, unknown
   }
   const authorizationHeader = ASSISTANT_AUTH ? `Bearer ${ASSISTANT_AUTH}` : '';
   const url = ASSISTANT_URL.match(/^https?:\/\//i) ? ASSISTANT_URL : `http://${ASSISTANT_URL}`;
-  const controller = new AbortController();
-  const timeoutMs =
-    Number.isFinite(FILE_QUERY_ASSISTANT_TIMEOUT_MS) && FILE_QUERY_ASSISTANT_TIMEOUT_MS > 0
-      ? FILE_QUERY_ASSISTANT_TIMEOUT_MS
-      : 30000;
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
+  const timeoutMs = Number.isFinite(FILE_QUERY_ASSISTANT_TIMEOUT_MS) && FILE_QUERY_ASSISTANT_TIMEOUT_MS > 0
+    ? FILE_QUERY_ASSISTANT_TIMEOUT_MS
+    : 30000;
+  const retries = Number.isFinite(FILE_QUERY_ASSISTANT_RETRIES) ? Math.max(0, FILE_QUERY_ASSISTANT_RETRIES) : 0;
+  const retryDelayMs =
+    Number.isFinite(FILE_QUERY_ASSISTANT_RETRY_DELAY_MS) && FILE_QUERY_ASSISTANT_RETRY_DELAY_MS > 0
+      ? FILE_QUERY_ASSISTANT_RETRY_DELAY_MS
+      : 1200;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
     const messagePayload = {
       Authorization: ASSISTANT_AUTH,
       authorization: ASSISTANT_AUTH,
@@ -1003,10 +1019,18 @@ async function sendSonjaReviewRequestToAssistant(payload: Record<string, unknown
     });
     const raw = await response.text();
     if (!response.ok) {
+      if (attempt < retries) {
+        await sleep(retryDelayMs);
+        continue;
+      }
       return null;
     }
     const parsed = parseAssistantJsonContent(raw);
     if (!parsed) {
+      if (attempt < retries) {
+        await sleep(retryDelayMs);
+        continue;
+      }
       return null;
     }
     const matchedRaw = Array.isArray(parsed.matched_ids) ? parsed.matched_ids : [];
@@ -1023,11 +1047,17 @@ async function sendSonjaReviewRequestToAssistant(payload: Record<string, unknown
       matchedIds: Array.from(new Set(matchedIds)),
       reason: String(parsed.reason || '').trim(),
     };
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
+    } catch {
+      if (attempt < retries) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
   }
+  return null;
 }
 
 async function reviewSonjaRowsAgainstPrompt(args: {
@@ -1076,13 +1106,18 @@ async function sendSqlPlanRequestToAssistant(payload: Record<string, unknown>): 
   }
   const authorizationHeader = ASSISTANT_AUTH ? `Bearer ${ASSISTANT_AUTH}` : '';
   const url = ASSISTANT_URL.match(/^https?:\/\//i) ? ASSISTANT_URL : `http://${ASSISTANT_URL}`;
-  const controller = new AbortController();
-  const timeoutMs =
-    Number.isFinite(FILE_QUERY_ASSISTANT_TIMEOUT_MS) && FILE_QUERY_ASSISTANT_TIMEOUT_MS > 0
-      ? FILE_QUERY_ASSISTANT_TIMEOUT_MS
-      : 30000;
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
+  const timeoutMs = Number.isFinite(FILE_QUERY_ASSISTANT_TIMEOUT_MS) && FILE_QUERY_ASSISTANT_TIMEOUT_MS > 0
+    ? FILE_QUERY_ASSISTANT_TIMEOUT_MS
+    : 30000;
+  const retries = Number.isFinite(FILE_QUERY_ASSISTANT_RETRIES) ? Math.max(0, FILE_QUERY_ASSISTANT_RETRIES) : 0;
+  const retryDelayMs =
+    Number.isFinite(FILE_QUERY_ASSISTANT_RETRY_DELAY_MS) && FILE_QUERY_ASSISTANT_RETRY_DELAY_MS > 0
+      ? FILE_QUERY_ASSISTANT_RETRY_DELAY_MS
+      : 1200;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
     const schema = [
       'SQLite table: files(',
       'id INTEGER PRIMARY KEY,',
@@ -1142,14 +1177,24 @@ async function sendSqlPlanRequestToAssistant(payload: Record<string, unknown>): 
     });
     const raw = await response.text();
     if (!response.ok) {
+      if (attempt < retries) {
+        await sleep(retryDelayMs);
+        continue;
+      }
       return null;
     }
     return raw;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
+    } catch {
+      if (attempt < retries) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
   }
+  return null;
 }
 
 function parseFileSqlPlan(raw: string): FileSqlPlan | null {
@@ -1623,6 +1668,10 @@ async function runFileSearchQuery(args: {
   const rawPlan = FILE_QUERY_USE_ASSISTANT ? await sendSqlPlanRequestToAssistant(planPayload) : null;
   const parsedPlan = rawPlan ? parseFileSqlPlan(rawPlan) : null;
   const isSonjaOwner = normalizeOwner(args.owner) === SONJA_OWNER;
+  const strictSonjaAssistant = isSonjaOwner && SONJA_STRICT_LLM_COMPLETION;
+  if (strictSonjaAssistant && FILE_QUERY_USE_ASSISTANT && (!rawPlan || !parsedPlan || !parsedPlan.sql)) {
+    throw new Error('assistant plan was incomplete; refusing fallback for strict sonja query');
+  }
   const fallbackSql =
     `SELECT id, bucket, s3_key, filename, content_type, size_bytes, caption, summary, content_scope, summary_status, created_at FROM files ORDER BY id DESC LIMIT ${FILE_SQL_MAX_ROWS}`;
   const dateConstraint = extractDateConstraintFromPrompt(args.prompt);
@@ -1692,6 +1741,12 @@ async function refineSonjaSearchResults(args: {
   if (normalizeOwner(args.owner) !== SONJA_OWNER) {
     return { rows: args.initialRows, effectiveSql: args.initialSql, confidence: 0, iterations: 0 };
   }
+  if (SONJA_STRICT_LLM_COMPLETION && !FILE_QUERY_USE_ASSISTANT) {
+    throw new Error('FILE_QUERY_USE_ASSISTANT must be enabled for strict sonja query');
+  }
+  if (SONJA_STRICT_LLM_COMPLETION && !SONJA_REFINEMENT_ENABLED) {
+    throw new Error('SONJA_REFINEMENT_ENABLED must be enabled for strict sonja query');
+  }
   if (!SONJA_REFINEMENT_ENABLED) {
     return { rows: args.initialRows, effectiveSql: args.initialSql, confidence: 0, iterations: 0 };
   }
@@ -1699,6 +1754,9 @@ async function refineSonjaSearchResults(args: {
     return { rows: args.initialRows, effectiveSql: args.initialSql, confidence: 0, iterations: 0 };
   }
   const maxIterations = Math.max(0, SONJA_REFINEMENT_MAX_ITERATIONS);
+  if (SONJA_STRICT_LLM_COMPLETION && maxIterations <= 0) {
+    throw new Error('SONJA_REFINEMENT_MAX_ITERATIONS must be greater than 0 for strict sonja query');
+  }
   if (maxIterations <= 0) {
     return { rows: args.initialRows, effectiveSql: args.initialSql, confidence: 0, iterations: 0 };
   }
@@ -1718,6 +1776,9 @@ async function refineSonjaSearchResults(args: {
       rows: currentRows,
     });
     if (!review) {
+      if (SONJA_STRICT_LLM_COMPLETION) {
+        throw new Error('assistant refinement review did not complete for strict sonja query');
+      }
       break;
     }
     appliedIterations = iteration;
