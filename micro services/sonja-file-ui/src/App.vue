@@ -16,8 +16,6 @@ const fullscreenFile = ref(null);
 const sharing = ref(false);
 const hasSearched = ref(false);
 
-const promptPrefix = (import.meta.env.VITE_SONJA_PROMPT_PREFIX || "sonja file").trim();
-
 const hasResults = computed(() => files.value.length > 0);
 const showReplyText = computed(() => hasSearched.value && !loading.value && (!hasResults.value || Boolean(error.value)));
 function isImageType(contentType = "", filename = "") {
@@ -37,19 +35,6 @@ function isPdfType(contentType = "", filename = "") {
 
 function buildDownloadUrl(fileId) {
   return `/api/file/file/download?owner=sonja&id=${encodeURIComponent(String(fileId))}`;
-}
-
-function toPrefixedPrompt(rawPrompt) {
-  const value = String(rawPrompt || "").trim();
-  if (!value) {
-    return promptPrefix;
-  }
-  const loweredValue = value.toLowerCase();
-  const loweredPrefix = promptPrefix.toLowerCase();
-  if (loweredValue.startsWith(loweredPrefix)) {
-    return value;
-  }
-  return `${promptPrefix} ${value}`;
 }
 
 async function renderPdfThumbnail(pdfUrl) {
@@ -88,7 +73,7 @@ async function queryFiles() {
   error.value = "";
   reply.value = "";
   files.value = [];
-  effectivePrompt.value = toPrefixedPrompt(trimmedPrompt);
+  effectivePrompt.value = trimmedPrompt;
 
   try {
     hasSearched.value = true;
