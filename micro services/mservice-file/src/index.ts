@@ -58,6 +58,9 @@ const SONJA_REFINEMENT_REVIEW_CHARS = Number.parseInt(process.env.SONJA_REFINEME
 const SONJA_REFINEMENT_MAX_REVIEW_CHUNKS = Number.parseInt(process.env.SONJA_REFINEMENT_MAX_REVIEW_CHUNKS || '12', 10);
 const SONJA_REFINEMENT_MAX_ROWS = Number.parseInt(process.env.SONJA_REFINEMENT_MAX_ROWS || '120', 10);
 const ASSISTANT_TIMEOUT_MS = Number.parseInt(process.env.ASSISTANT_TIMEOUT_MS || '120000', 10);
+const FILE_QUERY_ASSISTANT_TIMEOUT_MS = Number.parseInt(process.env.FILE_QUERY_ASSISTANT_TIMEOUT_MS || '30000', 10);
+const FILE_QUERY_USE_ASSISTANT = String(process.env.FILE_QUERY_USE_ASSISTANT || 'false').toLowerCase() === 'true';
+const SONJA_REFINEMENT_ENABLED = String(process.env.SONJA_REFINEMENT_ENABLED || 'false').toLowerCase() === 'true';
 const FILE_EXTRACTION_TIMEOUT_MS = Number.parseInt(process.env.FILE_EXTRACTION_TIMEOUT_MS || '120000', 10);
 const S3_OPERATION_TIMEOUT_MS = Number.parseInt(process.env.S3_OPERATION_TIMEOUT_MS || '60000', 10);
 const FILE_SUMMARY_TEXT_LIMIT = Number.parseInt(process.env.FILE_SUMMARY_TEXT_LIMIT || '12000', 10);
@@ -949,7 +952,9 @@ async function sendSonjaReviewRequestToAssistant(payload: Record<string, unknown
   const url = ASSISTANT_URL.match(/^https?:\/\//i) ? ASSISTANT_URL : `http://${ASSISTANT_URL}`;
   const controller = new AbortController();
   const timeoutMs =
-    Number.isFinite(ASSISTANT_TIMEOUT_MS) && ASSISTANT_TIMEOUT_MS > 0 ? ASSISTANT_TIMEOUT_MS : 120000;
+    Number.isFinite(FILE_QUERY_ASSISTANT_TIMEOUT_MS) && FILE_QUERY_ASSISTANT_TIMEOUT_MS > 0
+      ? FILE_QUERY_ASSISTANT_TIMEOUT_MS
+      : 30000;
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const messagePayload = {
@@ -1073,7 +1078,9 @@ async function sendSqlPlanRequestToAssistant(payload: Record<string, unknown>): 
   const url = ASSISTANT_URL.match(/^https?:\/\//i) ? ASSISTANT_URL : `http://${ASSISTANT_URL}`;
   const controller = new AbortController();
   const timeoutMs =
-    Number.isFinite(ASSISTANT_TIMEOUT_MS) && ASSISTANT_TIMEOUT_MS > 0 ? ASSISTANT_TIMEOUT_MS : 120000;
+    Number.isFinite(FILE_QUERY_ASSISTANT_TIMEOUT_MS) && FILE_QUERY_ASSISTANT_TIMEOUT_MS > 0
+      ? FILE_QUERY_ASSISTANT_TIMEOUT_MS
+      : 30000;
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const schema = [
@@ -1250,14 +1257,28 @@ function extractPromptSearchTokens(prompt: string): string[] {
   return Array.from(new Set(tokens)).slice(0, 5);
 }
 
+function tokenToLikePattern(token: string): string {
+  const normalized = String(token || '')
+    .toLowerCase()
+    .trim()
+    .replace(/[_\-\s]+/g, '%')
+    .replace(/%+/g, '%');
+  if (!normalized) {
+    return '%%';
+  }
+  return `%${normalized}%`;
+}
+
 function parseGradeNumbersFromText(text: string): number[] {
   const out = new Set<number>();
-  const normalized = String(text || '').toLowerCase();
+  const normalized = String(text || '')
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ');
   if (!normalized) {
     return [];
   }
 
-  const rangeRegex = /\b(?:grade|grades|graad)\s*(\d{1,2})\s*(?:to|-|through|tot)\s*(\d{1,2})\b/gi;
+  const rangeRegex = /\b(?:grade|grades|graad)\s*(\d{1,2})\s*(?:to|through|tot|\-)\s*(\d{1,2})\b/gi;
   let rangeMatch: RegExpExecArray | null;
   while ((rangeMatch = rangeRegex.exec(normalized)) !== null) {
     const left = Number(rangeMatch[1]);
@@ -1283,16 +1304,21 @@ function parseGradeNumbersFromText(text: string): number[] {
   return Array.from(out).sort((a, b) => a - b);
 }
 
-function applyGradeConstraintFilter(rows: any[], prompt: string): any[] {
+function applyGradeConstraintFilter(
+  rows: any[],
+  prompt: string,
+  options?: { requireGradeInSummary?: boolean },
+): any[] {
   const promptGrades = parseGradeNumbersFromText(prompt);
   if (promptGrades.length === 0) {
     return rows;
   }
+  const requireGradeInSummary = Boolean(options?.requireGradeInSummary);
   const allowed = new Set(promptGrades);
   return rows.filter((row) => {
     const summaryGrades = parseGradeNumbersFromText(String(row?.summary || ''));
     if (summaryGrades.length === 0) {
-      return true;
+      return !requireGradeInSummary;
     }
     return summaryGrades.some((grade) => allowed.has(grade));
   });
@@ -1494,7 +1520,7 @@ function buildContentFallbackQuery(prompt: string, dateConstraint: DateConstrain
   const clauses: string[] = [];
   const params: string[] = [];
   for (const token of tokens) {
-    const like = `%${token}%`;
+    const like = tokenToLikePattern(token);
     clauses.push(
       '(' +
         `lower(coalesce(filename,'')) LIKE ? OR ` +
@@ -1525,7 +1551,7 @@ function buildSummaryFallbackQuery(prompt: string, dateConstraint: DateConstrain
   const params: string[] = [];
   for (const token of tokens) {
     clauses.push(`lower(coalesce(summary,'')) LIKE ?`);
-    params.push(`%${token}%`);
+    params.push(tokenToLikePattern(token));
   }
   return {
     sql:
@@ -1594,7 +1620,7 @@ async function runFileSearchQuery(args: {
     source_channel: args.sourceChannel || null,
     source_from: args.sourceFrom || null,
   };
-  const rawPlan = await sendSqlPlanRequestToAssistant(planPayload);
+  const rawPlan = FILE_QUERY_USE_ASSISTANT ? await sendSqlPlanRequestToAssistant(planPayload) : null;
   const parsedPlan = rawPlan ? parseFileSqlPlan(rawPlan) : null;
   const isSonjaOwner = normalizeOwner(args.owner) === SONJA_OWNER;
   const fallbackSql =
@@ -1603,7 +1629,7 @@ async function runFileSearchQuery(args: {
   const summaryFirstQuery = buildSummaryFallbackQuery(args.prompt, dateConstraint);
   let rows = summaryFirstQuery ? await args.dbCtx.dbAll(summaryFirstQuery.sql, ...summaryFirstQuery.params) : [];
   rows = await filterRowsForOwnerSearch({ owner: args.owner, rows, dbCtx: args.dbCtx });
-  rows = applyGradeConstraintFilter(rows, args.prompt);
+  rows = applyGradeConstraintFilter(rows, args.prompt, { requireGradeInSummary: isSonjaOwner });
   if (isSonjaOwner) {
     rows = applySubjectConstraintFilter(rows, args.prompt);
   }
@@ -1624,7 +1650,7 @@ async function runFileSearchQuery(args: {
     }
     rows = await args.dbCtx.dbAll(sql);
     rows = await filterRowsForOwnerSearch({ owner: args.owner, rows, dbCtx: args.dbCtx });
-    rows = applyGradeConstraintFilter(rows, args.prompt);
+    rows = applyGradeConstraintFilter(rows, args.prompt, { requireGradeInSummary: isSonjaOwner });
     if (isSonjaOwner) {
       rows = applySubjectConstraintFilter(rows, args.prompt);
     }
@@ -1637,7 +1663,7 @@ async function runFileSearchQuery(args: {
     if (fallbackQuery) {
       let fallbackRows = await args.dbCtx.dbAll(fallbackQuery.sql, ...fallbackQuery.params);
       fallbackRows = await filterRowsForOwnerSearch({ owner: args.owner, rows: fallbackRows, dbCtx: args.dbCtx });
-      fallbackRows = applyGradeConstraintFilter(fallbackRows, args.prompt);
+      fallbackRows = applyGradeConstraintFilter(fallbackRows, args.prompt, { requireGradeInSummary: isSonjaOwner });
       if (isSonjaOwner) {
         fallbackRows = applySubjectConstraintFilter(fallbackRows, args.prompt);
       }
@@ -1666,10 +1692,16 @@ async function refineSonjaSearchResults(args: {
   if (normalizeOwner(args.owner) !== SONJA_OWNER) {
     return { rows: args.initialRows, effectiveSql: args.initialSql, confidence: 0, iterations: 0 };
   }
+  if (!SONJA_REFINEMENT_ENABLED) {
+    return { rows: args.initialRows, effectiveSql: args.initialSql, confidence: 0, iterations: 0 };
+  }
   if (!ASSISTANT_URL) {
     return { rows: args.initialRows, effectiveSql: args.initialSql, confidence: 0, iterations: 0 };
   }
-  const maxIterations = Math.max(1, SONJA_REFINEMENT_MAX_ITERATIONS);
+  const maxIterations = Math.max(0, SONJA_REFINEMENT_MAX_ITERATIONS);
+  if (maxIterations <= 0) {
+    return { rows: args.initialRows, effectiveSql: args.initialSql, confidence: 0, iterations: 0 };
+  }
   let currentPrompt = args.originalPrompt;
   let currentRows = Array.isArray(args.initialRows) ? args.initialRows : [];
   let currentSql = args.initialSql;
