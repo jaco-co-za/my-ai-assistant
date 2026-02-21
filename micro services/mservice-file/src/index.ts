@@ -1833,6 +1833,27 @@ function wantsFileDelivery(prompt: string): boolean {
   return /\b(download|send|open|display|show)\b/.test(text) && /\b(file|pdf|document)\b/.test(text);
 }
 
+function isClarificationMessage(text: string): boolean {
+  const value = String(text || '').trim().toLowerCase();
+  if (!value) {
+    return false;
+  }
+  return (
+    /\b(clarify|clarification|specify|specific|more detail|which one|which file|what do you mean)\b/.test(value) ||
+    (/^\s*(please\s+)?(can you|could you|would you)\b/.test(value) && value.includes('?'))
+  );
+}
+
+function appendSonjaByeIfFinal(owner: string, message: string): string {
+  if (normalizeOwner(owner) !== SONJA_OWNER) {
+    return message;
+  }
+  if (isClarificationMessage(message)) {
+    return message;
+  }
+  return `${message}\n\nbye`;
+}
+
 function buildFileDownloadLink(req: Request, bucket: string, key: string): string {
   if (S3_BROWSER_BASE_URL) {
     const base = S3_BROWSER_BASE_URL.replace(/\/+$/, '');
@@ -2833,7 +2854,10 @@ app.post('/llm-query', authMiddleware, async (req, res) => {
       initialRows: initialQuery.rows,
       initialSql: initialQuery.effectiveSql,
     });
-    const rows = refinement.rows;
+    let rows = refinement.rows;
+    if (normalizeOwner(owner) === SONJA_OWNER) {
+      rows = applyPromptTokenRelevanceFilter(rows, prompt);
+    }
     const effectiveSql = refinement.effectiveSql || initialQuery.effectiveSql;
     const isWhatsapp = String(sourceChannel || '').toLowerCase() === 'whatsapp' || isWhatsappChatId(sourceFrom);
     const delivery = initialQuery.delivery;
@@ -2868,11 +2892,12 @@ app.post('/llm-query', authMiddleware, async (req, res) => {
         const summary = row?.summary ? String(row.summary) : '';
         return summary ? `- ${id}: ${filename} | Summary: ${summary}` : `- ${id}: ${filename}`;
       });
+      const baseMessage = lines.length > 0 ? `Sending ${lines.length} file(s):\n${lines.join('\n')}` : 'No matching files found.';
       res.json({
         success: true,
         owner,
         type: 'attachment',
-        message: lines.length > 0 ? `Sending ${lines.length} file(s):\n${lines.join('\n')}` : 'No matching files found.',
+        message: appendSonjaByeIfFinal(owner, baseMessage),
         rows,
         attachments,
       });
@@ -2907,11 +2932,12 @@ app.post('/llm-query', authMiddleware, async (req, res) => {
           ...(summaryLines.length > 0 ? ['', ...summaryLines] : []),
         ].join('\n')
       : 'No matching files found.';
+    const finalMessage = appendSonjaByeIfFinal(owner, message);
     res.json({
       success: true,
       owner,
       type: 'message',
-      message,
+      message: finalMessage,
       rows,
       sql: effectiveSql,
       delivery,
