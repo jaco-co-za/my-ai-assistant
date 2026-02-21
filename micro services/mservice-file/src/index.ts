@@ -1477,6 +1477,20 @@ function applySubjectConstraintFilter(rows: any[], prompt: string): any[] {
   });
 }
 
+function applyPromptTokenRelevanceFilter(rows: any[], prompt: string): any[] {
+  const tokens = extractPromptSearchTokens(prompt);
+  if (tokens.length === 0) {
+    return rows;
+  }
+  return rows.filter((row) => {
+    const summary = String(row?.summary || '').toLowerCase();
+    if (!summary) {
+      return false;
+    }
+    return tokens.some((token) => summary.includes(token));
+  });
+}
+
 function normalizeDateLiteral(value: string): string | null {
   const raw = String(value || '').trim().replace(/\//g, '-');
   const match = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
@@ -1681,6 +1695,7 @@ async function runFileSearchQuery(args: {
   rows = applyGradeConstraintFilter(rows, args.prompt, { requireGradeInSummary: isSonjaOwner });
   if (isSonjaOwner) {
     rows = applySubjectConstraintFilter(rows, args.prompt);
+    rows = applyPromptTokenRelevanceFilter(rows, args.prompt);
   }
   let effectiveSql = summaryFirstQuery?.sql || '';
   let sql = enforceSafeFileSql(parsedPlan?.sql || fallbackSql);
@@ -1702,6 +1717,7 @@ async function runFileSearchQuery(args: {
     rows = applyGradeConstraintFilter(rows, args.prompt, { requireGradeInSummary: isSonjaOwner });
     if (isSonjaOwner) {
       rows = applySubjectConstraintFilter(rows, args.prompt);
+      rows = applyPromptTokenRelevanceFilter(rows, args.prompt);
     }
     effectiveSql = sql;
   }
@@ -1715,6 +1731,7 @@ async function runFileSearchQuery(args: {
       fallbackRows = applyGradeConstraintFilter(fallbackRows, args.prompt, { requireGradeInSummary: isSonjaOwner });
       if (isSonjaOwner) {
         fallbackRows = applySubjectConstraintFilter(fallbackRows, args.prompt);
+        fallbackRows = applyPromptTokenRelevanceFilter(fallbackRows, args.prompt);
       }
       if (fallbackRows.length > 0) {
         rows = fallbackRows;
