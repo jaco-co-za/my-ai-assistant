@@ -34,6 +34,8 @@ const MIME_BY_EXT = new Map([
 
 const POLL_INTERVAL_MS = 2000;
 const FILE_WAIT_TIMEOUT_MS = 10 * 60 * 1000;
+const HTTP_TIMEOUT_MS = 60 * 1000;
+const PENDING_LOG_INTERVAL_MS = 30 * 1000;
 const DEFAULT_BASE_HOST = "192.168.55.113";
 const LEGACY_BASE_HOST = "192.168.55.73";
 
@@ -101,6 +103,16 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function fetchWithTimeout(url, options = {}, timeoutMs = HTTP_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function parseRecursiveFlag(value) {
   const raw = String(value || "").trim().toLowerCase();
   return raw === "true" || raw === "1" || raw === "yes" || raw === "y";
@@ -151,7 +163,7 @@ async function uploadViaAssistant(uploadUrl, owner, filePath) {
   const filename = path.basename(filePath);
   const mimeType = inferMimeType(filePath);
   const fileBuffer = await fs.readFile(filePath);
-  const response = await fetch(uploadUrl, {
+  const response = await fetchWithTimeout(uploadUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -161,7 +173,7 @@ async function uploadViaAssistant(uploadUrl, owner, filePath) {
       dataBase64: fileBuffer.toString("base64"),
       caption: "",
     }),
-  });
+  }, HTTP_TIMEOUT_MS);
   const rawText = await response.text();
   let parsed = {};
   try {
@@ -183,8 +195,9 @@ async function uploadViaAssistant(uploadUrl, owner, filePath) {
   };
 }
 
-async function pollFileCompletion(statusUrl, authHeader, owner, fileId, key) {
+async function pollFileCompletion(statusUrl, authHeader, owner, fileId, key, display) {
   const started = Date.now();
+  let nextPendingLogAt = started + PENDING_LOG_INTERVAL_MS;
   let notFoundCount = 0;
   while (Date.now() - started <= FILE_WAIT_TIMEOUT_MS) {
     const params = new URLSearchParams();
@@ -194,9 +207,9 @@ async function pollFileCompletion(statusUrl, authHeader, owner, fileId, key) {
     } else if (key) {
       params.set("key", key);
     }
-    const response = await fetch(`${statusUrl}?${params.toString()}`, {
+    const response = await fetchWithTimeout(`${statusUrl}?${params.toString()}`, {
       headers: authHeader ? { Authorization: authHeader } : {},
-    });
+    }, HTTP_TIMEOUT_MS);
 
     if (response.status === 404) {
       notFoundCount += 1;
@@ -230,6 +243,11 @@ async function pollFileCompletion(statusUrl, authHeader, owner, fileId, key) {
 
     const status = String(parsed.file.summary_status || "").trim().toLowerCase();
     if (!status || status === "pending") {
+      if (Date.now() >= nextPendingLogAt) {
+        const elapsedSec = Math.floor((Date.now() - started) / 1000);
+        console.log(`Waiting on summary for ${display || key || fileId || "file"} (${elapsedSec}s elapsed, status=pending)...`);
+        nextPendingLogAt = Date.now() + PENDING_LOG_INTERVAL_MS;
+      }
       await sleep(POLL_INTERVAL_MS);
       continue;
     }
@@ -272,14 +290,14 @@ async function cancelSummaryJob(cancelUrl, authHeader, owner, fileId, key) {
     payload.key = key;
   }
   try {
-    const response = await fetch(cancelUrl, {
+    const response = await fetchWithTimeout(cancelUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         ...(authHeader ? { Authorization: authHeader } : {}),
       },
       body: JSON.stringify(payload),
-    });
+    }, HTTP_TIMEOUT_MS);
     const raw = await response.text();
     if (!response.ok) {
       console.warn(`Cancel summary request failed (${response.status}): ${raw || "no response body"}`);
@@ -416,7 +434,7 @@ async function main() {
         continue;
       }
 
-      const status = await pollFileCompletion(statusUrl, statusAuth, owner, uploaded.fileId, uploaded.key);
+      const status = await pollFileCompletion(statusUrl, statusAuth, owner, uploaded.fileId, uploaded.key, display);
       if (status.status === "completed" || status.status === "skipped") {
         console.log(`Completed ${display} (status=${status.status})`);
         console.log(`Summary ${display}: ${status.summary || "(no summary)"}`);
@@ -452,6 +470,7 @@ async function main() {
   }
 
   console.log(`\nDone. Successfully processed ${successCount}/${selected.length}. Failed ${failedCount}.`);
+  process.exit(failedCount > 0 ? 1 : 0);
 }
 
 main().catch((error) => {

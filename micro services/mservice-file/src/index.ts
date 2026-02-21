@@ -64,6 +64,7 @@ const FILE_SUMMARY_TEXT_LIMIT = Number.parseInt(process.env.FILE_SUMMARY_TEXT_LI
 const FILE_SUMMARY_CHUNK_CHARS = Number.parseInt(process.env.FILE_SUMMARY_CHUNK_CHARS || '4000', 10);
 const FILE_SUMMARY_CHUNK_OVERLAP_CHARS = Number.parseInt(process.env.FILE_SUMMARY_CHUNK_OVERLAP_CHARS || '400', 10);
 const FILE_SUMMARY_MAX_CHUNKS = Number.parseInt(process.env.FILE_SUMMARY_MAX_CHUNKS || '24', 10);
+const FILE_SUMMARY_PENDING_STALE_MS = Number.parseInt(process.env.FILE_SUMMARY_PENDING_STALE_MS || '180000', 10);
 const WHATSAPP_MESSAGE_URL = (process.env.WHATSAPP_MESSAGE_URL || '').trim();
 const WHATSAPP_MESSAGE_AUTH = (process.env.WHATSAPP_MESSAGE_AUTH || '').trim();
 
@@ -2362,7 +2363,7 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
     await ensureBucketExists(bucket);
     if (FILE_DEDUP_ENABLED) {
       const existing = await dbCtx.dbGet(
-        `SELECT id, bucket, s3_key, filename, content_type, size_bytes, caption, summary, content_scope, summary_status, pdf_text_length
+        `SELECT id, bucket, s3_key, filename, content_type, size_bytes, caption, summary, content_scope, summary_status, pdf_text_length, updated_at
          FROM files
          WHERE bucket = ? AND content_hash = ?
          ORDER BY id DESC
@@ -2376,6 +2377,13 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
         const existingSummaryRaw = String(existing.summary || '').trim();
         const hasNaSummary = existingSummaryRaw.toUpperCase() === 'NA';
         const hasNoUsableSummary = existingSummaryRaw.length === 0 || hasNaSummary;
+        const jobKey = buildSummaryJobKey(owner, existingId);
+        const hasActiveJob = activeSummaryAbortControllers.has(jobKey);
+        const updatedAtMs = Date.parse(String(existing.updated_at || ''));
+        const isPendingStale =
+          existingSummaryStatusRaw === 'pending' &&
+          Number.isFinite(updatedAtMs) &&
+          Date.now() - updatedAtMs > FILE_SUMMARY_PENDING_STALE_MS;
         const defaultSummaryStatus = shouldProcessPdfSummary && ASSISTANT_URL ? 'pending' : 'skipped';
         let resolvedSummaryStatus =
           existingSummaryStatusRaw === 'pending' ||
@@ -2405,6 +2413,12 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
         if (shouldRetryFailedSummary) {
           resolvedSummaryStatus = 'pending';
         }
+        if (shouldProcessPdfSummary && resolvedSummaryStatus === 'pending' && !hasActiveJob && isPendingStale) {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[mservice-file][upload] restarting stale pending summary owner=${owner} fileId=${existingId} ageMs=${Date.now() - updatedAtMs}`,
+          );
+        }
         if (convertedPngToPdf && existingId > 0) {
           await dbCtx.dbRun(
             `UPDATE files
@@ -2417,7 +2431,22 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
             existingId,
           );
         }
-        if (shouldProcessPdfSummary && ASSISTANT_URL && resolvedSummaryStatus === 'pending' && existingId > 0) {
+        const shouldStartSummaryJob =
+          shouldProcessPdfSummary &&
+          ASSISTANT_URL &&
+          resolvedSummaryStatus === 'pending' &&
+          existingId > 0 &&
+          (!hasActiveJob || shouldRetryFailedSummary || isPendingStale);
+        const shouldWaitForExistingPending =
+          shouldProcessPdfSummary &&
+          ASSISTANT_URL &&
+          resolvedSummaryStatus === 'pending' &&
+          existingId > 0 &&
+          hasActiveJob &&
+          !shouldRetryFailedSummary &&
+          !isPendingStale;
+
+        if (shouldStartSummaryJob) {
           summaryAsync = true;
           await dbCtx.dbRun(
             `UPDATE files
@@ -2454,6 +2483,8 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
             baseMetadata,
             content: bytes,
           });
+        } else if (shouldWaitForExistingPending) {
+          summaryAsync = true;
         }
         res.status(200).json({
           success: true,
