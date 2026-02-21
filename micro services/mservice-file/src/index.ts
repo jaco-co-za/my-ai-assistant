@@ -999,7 +999,7 @@ async function sendSonjaReviewRequestToAssistant(payload: Record<string, unknown
             '- confidence is how well candidate summaries match the user request.',
             '- satisfied=true only if confidence >= 80.',
             '- matched_ids: only ids that clearly match the user request.',
-            '- Grade matching is strict: if user request specifies grade(s), do not match summaries with different grade references.',
+            '- Grade matching is strict only when user explicitly asks for strict/exact/only grade matching.',
             '- For grade ranges (for example 1 to 6), treat grades inside range as matches.',
             '- refined_prompt: improved search prompt to get closer matches if not satisfied.',
             '- reason: one short sentence.',
@@ -1154,7 +1154,7 @@ async function sendSqlPlanRequestToAssistant(payload: Record<string, unknown>): 
             '- Include ORDER BY id DESC by default.',
             '- content_scope values: business | personal.',
             '- If payload.owner is sonja, use summary-based matching only. Do not use filename/caption/pdf_text/source_sender for semantic matching.',
-            '- Grade constraints are strict: when prompt includes grade references, summaries with grade references must match requested grade(s) or requested grade range.',
+            '- Apply strict grade constraints only when user explicitly asks for strict/exact/only grade matching.',
             '- Subject constraints are strict: for single-subject prompts (for example "grade 3 math"), avoid broad multi-subject summaries unless user explicitly asks for mixed/all-subject content.',
             '- Do not assume source/source_sender constraints unless user explicitly asks for source, sender, or channel filtering.',
             '- Prefer summary matches first when user asks about file content/topic.',
@@ -1300,7 +1300,7 @@ function extractPromptSearchTokens(prompt: string): string[] {
   const stopwords = new Set([
     'a', 'an', 'and', 'any', 'about', 'for', 'from', 'find', 'get', 'give', 'show', 'list', 'search', 'look',
     'looking', 'me', 'my', 'the', 'to', 'with', 'files', 'file', 'documents', 'document', 'please', 'latest',
-    'last', 'recent', 'upload', 'uploads',
+    'last', 'recent', 'upload', 'uploads', 'other', 'thing', 'things', 'stuff',
   ]);
   const tokens = String(prompt || '')
     .toLowerCase()
@@ -1357,6 +1357,22 @@ function parseGradeNumbersFromText(text: string): number[] {
   return Array.from(out).sort((a, b) => a - b);
 }
 
+function promptRequestsStrictGradeMatching(prompt: string): boolean {
+  const text = String(prompt || '').toLowerCase();
+  if (!text) {
+    return false;
+  }
+  return (
+    /\bstrict\b/.test(text) ||
+    /\bexact\b/.test(text) ||
+    /\bonly\b/.test(text) ||
+    /\bmust match\b/.test(text) ||
+    /\bno other grades?\b/.test(text) ||
+    /\bexclude other grades?\b/.test(text) ||
+    /\bjust grade\b/.test(text)
+  );
+}
+
 function applyGradeConstraintFilter(
   rows: any[],
   prompt: string,
@@ -1364,6 +1380,9 @@ function applyGradeConstraintFilter(
 ): any[] {
   const promptGrades = parseGradeNumbersFromText(prompt);
   if (promptGrades.length === 0) {
+    return rows;
+  }
+  if (!promptRequestsStrictGradeMatching(prompt)) {
     return rows;
   }
   const requireGradeInSummary = Boolean(options?.requireGradeInSummary);
@@ -1490,12 +1509,13 @@ function applyPromptTokenRelevanceFilter(rows: any[], prompt: string): any[] {
   if (tokens.length === 0) {
     return rows;
   }
+  const tokenPatterns = tokens.map((token) => new RegExp(`\\b${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i'));
   return rows.filter((row) => {
-    const summary = String(row?.summary || '').toLowerCase();
+    const summary = String(row?.summary || '');
     if (!summary) {
       return false;
     }
-    return tokens.some((token) => summary.includes(token));
+    return tokenPatterns.some((pattern) => pattern.test(summary));
   });
 }
 
