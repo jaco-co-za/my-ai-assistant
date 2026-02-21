@@ -225,6 +225,14 @@ function normalizeOwner(value: unknown): string {
   return raw.includes(SONJA_OWNER) ? SONJA_OWNER : DEFAULT_OWNER;
 }
 
+function stripSonjaPromptPrefix(prompt: string): string {
+  const text = String(prompt || '').trim();
+  if (!text) {
+    return '';
+  }
+  return text.replace(/^\s*sonja\s+files?\b[:\s-]*/i, '').trim();
+}
+
 function resolveDbPath(owner: string): string {
   return normalizeOwner(owner) === SONJA_OWNER ? DB_PATH_SONJA : DB_PATH_ME;
 }
@@ -1777,7 +1785,9 @@ async function refineSonjaSearchResults(args: {
   if (maxIterations <= 0) {
     return { rows: args.initialRows, effectiveSql: args.initialSql, confidence: 0, iterations: 0 };
   }
-  let currentPrompt = args.originalPrompt;
+  const normalizedOriginalPrompt =
+    normalizeOwner(args.owner) === SONJA_OWNER ? stripSonjaPromptPrefix(args.originalPrompt) : args.originalPrompt;
+  let currentPrompt = normalizedOriginalPrompt;
   let currentRows = Array.isArray(args.initialRows) ? args.initialRows : [];
   let currentSql = args.initialSql;
   let finalConfidence = 0;
@@ -1787,7 +1797,7 @@ async function refineSonjaSearchResults(args: {
       break;
     }
     const review = await reviewSonjaRowsAgainstPrompt({
-      originalPrompt: args.originalPrompt,
+      originalPrompt: normalizedOriginalPrompt,
       currentPrompt,
       iteration,
       rows: currentRows,
@@ -1810,7 +1820,10 @@ async function refineSonjaSearchResults(args: {
     if (review.satisfied || review.confidence >= SONJA_REFINEMENT_CONFIDENCE_THRESHOLD) {
       break;
     }
-    const refinedPrompt = String(review.refinedPrompt || '').trim();
+    const refinedPromptRaw = String(review.refinedPrompt || '').trim();
+    const refinedPrompt = normalizeOwner(args.owner) === SONJA_OWNER
+      ? stripSonjaPromptPrefix(refinedPromptRaw)
+      : refinedPromptRaw;
     if (!refinedPrompt || refinedPrompt.toLowerCase() === currentPrompt.toLowerCase()) {
       break;
     }
@@ -2828,8 +2841,9 @@ app.post('/file/upload', authMiddleware, async (req, res) => {
 
 app.post('/llm-query', authMiddleware, async (req, res) => {
   try {
-    const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : '';
     const owner = normalizeOwner(req.body?.owner ?? req.body?.query_owner ?? req.body?.source_owner);
+    const rawPrompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : '';
+    const prompt = owner === SONJA_OWNER ? stripSonjaPromptPrefix(rawPrompt) : rawPrompt;
     const dbCtx = await getDbContext(owner);
     const sourceChannel = typeof req.body?.source_channel === 'string' ? req.body.source_channel.trim() : '';
     const sourceFrom = typeof req.body?.source_from === 'string' ? req.body.source_from.trim() : '';
