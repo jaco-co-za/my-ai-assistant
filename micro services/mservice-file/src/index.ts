@@ -65,6 +65,7 @@ const FILE_SUMMARY_CHUNK_CHARS = Number.parseInt(process.env.FILE_SUMMARY_CHUNK_
 const FILE_SUMMARY_CHUNK_OVERLAP_CHARS = Number.parseInt(process.env.FILE_SUMMARY_CHUNK_OVERLAP_CHARS || '400', 10);
 const FILE_SUMMARY_MAX_CHUNKS = Number.parseInt(process.env.FILE_SUMMARY_MAX_CHUNKS || '24', 10);
 const FILE_SUMMARY_PENDING_STALE_MS = Number.parseInt(process.env.FILE_SUMMARY_PENDING_STALE_MS || '180000', 10);
+const FILE_PDF_DIRECT_LLM_TIMEOUT_MS = Number.parseInt(process.env.FILE_PDF_DIRECT_LLM_TIMEOUT_MS || '30000', 10);
 const WHATSAPP_MESSAGE_URL = (process.env.WHATSAPP_MESSAGE_URL || '').trim();
 const WHATSAPP_MESSAGE_AUTH = (process.env.WHATSAPP_MESSAGE_AUTH || '').trim();
 
@@ -443,6 +444,11 @@ function isPdfPasswordError(err: unknown): boolean {
   return message.includes('password') || message.includes('encrypted');
 }
 
+function isExtractionTimeoutError(err: unknown, label: string): boolean {
+  const message = String((err as { message?: unknown })?.message || err || '').toLowerCase();
+  return message.includes(`${label.toLowerCase()} timed out after`);
+}
+
 function getKnownPdfPasswords(): string[] {
   const builtIn = ['7609085080084', '7509280043087'];
   const fromEnv = PDF_KNOWN_PASSWORDS_ENV
@@ -642,7 +648,15 @@ async function extractWordTextFromBuffer(buffer: Buffer): Promise<string> {
 
 async function sendSummaryRequestToAssistant(
   payload: Record<string, unknown>,
-  options?: { model?: string; imageBase64?: string; extraGuidance?: string[]; signal?: AbortSignal },
+  options?: {
+    model?: string;
+    imageBase64?: string;
+    fileBase64?: string;
+    fileName?: string;
+    fileContentType?: string;
+    extraGuidance?: string[];
+    signal?: AbortSignal;
+  },
 ): Promise<string | null> {
   if (!ASSISTANT_URL) {
     return null;
@@ -682,6 +696,15 @@ async function sendSummaryRequestToAssistant(
     };
     if (options?.imageBase64) {
       userMessage.images = [options.imageBase64];
+    }
+    if (options?.fileBase64) {
+      userMessage.files = [
+        {
+          filename: options.fileName || 'upload.bin',
+          content_type: options.fileContentType || 'application/octet-stream',
+          data: options.fileBase64,
+        },
+      ];
     }
     const messagePayload = {
       Authorization: ASSISTANT_AUTH,
@@ -735,7 +758,15 @@ async function sendSummaryRequestToAssistant(
 
 async function requestParsedSummaryFromAssistant(
   payload: Record<string, unknown>,
-  options?: { model?: string; imageBase64?: string; extraGuidance?: string[]; signal?: AbortSignal },
+  options?: {
+    model?: string;
+    imageBase64?: string;
+    fileBase64?: string;
+    fileName?: string;
+    fileContentType?: string;
+    extraGuidance?: string[];
+    signal?: AbortSignal;
+  },
 ): Promise<{ raw: string; parsedSummary: string }> {
   const raw = await sendSummaryRequestToAssistant(payload, options);
   if (!raw) {
@@ -1961,6 +1992,8 @@ async function runPdfSummaryPipeline(args: {
   let extractor: string | null = null;
   let resolvedContentScope: ContentScope = args.contentScope;
   let usedPdfImageFallback = false;
+  let useDirectPdfLlmFallback = false;
+  let rawFileBase64: string | null = null;
   try {
     const isPdf = isPdfAttachment(args.contentType, args.filename);
     const isWord = isWordAttachment(args.contentType, args.filename);
@@ -1969,12 +2002,28 @@ async function runPdfSummaryPipeline(args: {
       throw new Error('Unsupported extractable file type');
     }
     if (isPdf) {
-      extractedPdfText = normalizeWhitespace(
-        await withTimeout(extractPdfTextFromBuffer(args.content), FILE_EXTRACTION_TIMEOUT_MS, 'pdf extraction'),
-      );
+      const pdfExtractionBudgetMs =
+        Number.isFinite(FILE_PDF_DIRECT_LLM_TIMEOUT_MS) && FILE_PDF_DIRECT_LLM_TIMEOUT_MS > 0
+          ? FILE_PDF_DIRECT_LLM_TIMEOUT_MS
+          : FILE_EXTRACTION_TIMEOUT_MS;
+      try {
+        extractedPdfText = normalizeWhitespace(
+          await withTimeout(extractPdfTextFromBuffer(args.content), pdfExtractionBudgetMs, 'pdf extraction'),
+        );
+      } catch (pdfExtractionError: unknown) {
+        if (!isExtractionTimeoutError(pdfExtractionError, 'pdf extraction')) {
+          throw pdfExtractionError;
+        }
+        // eslint-disable-next-line no-console
+        console.warn(`[mservice-file][summary] pdf extraction timed out; using direct file LLM fallback fileId=${args.fileId} filename=${args.filename}`);
+        useDirectPdfLlmFallback = true;
+        extractor = 'pdf-direct-llm-fallback';
+        extractedPdfText = '';
+        rawFileBase64 = args.content.toString('base64');
+      }
       if (hasMeaningfulPdfText(extractedPdfText)) {
         extractor = 'pdf2json';
-      } else {
+      } else if (!useDirectPdfLlmFallback) {
         // Scanned/image-style PDFs: retry summary path with image model.
         extractedPdfText = '';
         summaryModel = IMAGE_SUMMARY_MODEL;
@@ -2014,6 +2063,7 @@ async function runPdfSummaryPipeline(args: {
       const canAttachImagePayload =
         useImageInput &&
         (args.contentType || '').toLowerCase().startsWith('image/');
+      const canAttachRawFilePayload = isPdf && useDirectPdfLlmFallback && !!rawFileBase64;
       const payload = buildSummaryPayload(useImageInput, usedPdfImageFallback);
       const normalizedImageBase64 = canAttachImagePayload
         ? await toVisionImageBase64(args.content, args.contentType, args.filename)
@@ -2021,6 +2071,14 @@ async function runPdfSummaryPipeline(args: {
       return await requestParsedSummaryFromAssistant(payload, {
         model: summaryModel,
         imageBase64: normalizedImageBase64,
+        fileBase64: canAttachRawFilePayload ? rawFileBase64 || undefined : undefined,
+        fileName: canAttachRawFilePayload ? args.filename : undefined,
+        fileContentType: canAttachRawFilePayload ? args.contentType : undefined,
+        extraGuidance: canAttachRawFilePayload
+          ? [
+            'PDF text extraction timed out; use the attached PDF document directly to generate the summary.',
+          ]
+          : undefined,
         signal: abortController.signal,
       });
     };
