@@ -76,6 +76,9 @@ async function renderPdfThumbnail(pdfUrl) {
 }
 
 async function queryFiles() {
+  if (loading.value) {
+    return;
+  }
   const trimmedPrompt = String(prompt.value || "").trim();
   if (!trimmedPrompt) {
     error.value = "Enter a file retrieval prompt.";
@@ -126,17 +129,15 @@ async function queryFiles() {
         };
       });
 
-    files.value = prepared;
     const pdfRows = prepared.filter((item) => item.kind === "pdf");
-    await Promise.all(
-      pdfRows.map(async (item) => {
-        try {
-          item.thumbUrl = await renderPdfThumbnail(item.downloadUrl);
-        } catch {
-          item.thumbUrl = "";
-        }
-      }),
-    );
+    for (const item of pdfRows) {
+      try {
+        item.thumbUrl = await renderPdfThumbnail(item.downloadUrl);
+      } catch {
+        item.thumbUrl = "";
+      }
+    }
+    files.value = prepared;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     error.value = message || "Query failed.";
@@ -197,7 +198,7 @@ function onKeyDown(event) {
   }
 }
 
-function onPromptKeyDown(event) {
+async function onPromptKeyDown(event) {
   if (loading.value) {
     return;
   }
@@ -205,7 +206,7 @@ function onPromptKeyDown(event) {
   const withModifier = event.ctrlKey || event.metaKey;
   if (isEnter && withModifier) {
     event.preventDefault();
-    void queryFiles();
+    await queryFiles();
   }
 }
 
