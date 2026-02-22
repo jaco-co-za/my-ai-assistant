@@ -16,6 +16,7 @@ const DEFAULT_EMBED_MAX_INPUT_CHARS = 12000;
 const DEFAULT_CLASSIFIER_ENABLED = true;
 const DEFAULT_CLASSIFIER_MODEL = "qwen2.5:14b";
 const DEFAULT_CLASSIFIER_TIMEOUT_MS = 45000;
+const DEFAULT_VERBOSE_LOGS = false;
 const HTTP_TIMEOUT_MS = 120_000;
 
 function usage() {
@@ -33,6 +34,7 @@ function usage() {
   console.log("  CLASSIFIER_ENABLED     default true");
   console.log("  CLASSIFIER_MODEL       default qwen2.5:14b");
   console.log("  CLASSIFIER_TIMEOUT_MS  default 45000");
+  console.log("  VERBOSE_LOGS           default false");
   console.log("  MYSQL_HOST             default 127.0.0.1");
   console.log("  MYSQL_PORT             default 3306");
   console.log("  MYSQL_DATABASE         required");
@@ -79,6 +81,12 @@ function normalizeHeaderToken(value) {
 function toInt(value, fallback) {
   const parsed = Number.parseInt(String(value ?? ""), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function toBool(value, fallback = false) {
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (!raw) return fallback;
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "y";
 }
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = HTTP_TIMEOUT_MS) {
@@ -448,7 +456,11 @@ function buildClassifierPromptPayload(summary, filename, allowedSubjects) {
 }
 
 async function classifyWithOllama(config, summary, filename, allowedSubjects) {
+  const startedAt = Date.now();
   const payload = buildClassifierPromptPayload(summary, filename, allowedSubjects);
+  if (config.verboseLogs) {
+    console.log(`[classify] request file="${filename}" model=${config.classifierModel}`);
+  }
   const response = await fetchWithTimeout(
     `${config.ollamaUrl}/api/chat`,
     {
@@ -500,6 +512,11 @@ async function classifyWithOllama(config, summary, filename, allowedSubjects) {
   const subject = canonicalizeSubjectLabel(json.subject);
   const educational = Number(json.educational) === 1 ? 1 : Number(json.educational) === 0 ? 0 : null;
   const confidence = Number.isFinite(Number(json.confidence)) ? Number(json.confidence) : 0;
+  if (config.verboseLogs) {
+    console.log(
+      `[classify] result file="${filename}" grade=${grade ?? "null"} subject=${subject} educational=${educational ?? "null"} confidence=${confidence} elapsed=${Date.now() - startedAt}ms`,
+    );
+  }
   return { grade, subject, educational, confidence };
 }
 
@@ -623,6 +640,7 @@ async function resolveConfig() {
     process.env.CLASSIFIER_TIMEOUT_MS || localEnv.CLASSIFIER_TIMEOUT_MS,
     DEFAULT_CLASSIFIER_TIMEOUT_MS,
   );
+  const verboseLogs = toBool(process.env.VERBOSE_LOGS ?? localEnv.VERBOSE_LOGS, DEFAULT_VERBOSE_LOGS);
 
   const mysqlHostRaw = String(
     process.env.MYSQL_HOST || localEnv.MYSQL_HOST || mysqlEnv.VECTORIZER_MYSQL_HOST || mysqlEnv.MYSQL_HOST || "127.0.0.1",
@@ -656,6 +674,7 @@ async function resolveConfig() {
     classifierEnabled,
     classifierModel,
     classifierTimeoutMs,
+    verboseLogs,
     mysqlHost,
     mysqlPort,
     mysqlDatabase,
@@ -710,6 +729,7 @@ async function downloadFile(config, fileId) {
 }
 
 async function embedChunk(config, payload) {
+  const startedAt = Date.now();
   const embedUrl = `${config.ollamaUrl}/api/embed`;
   const requestBody = {
     model: config.model,
@@ -736,9 +756,15 @@ async function embedChunk(config, payload) {
     parsed = {};
   }
   if (Array.isArray(parsed.embeddings) && Array.isArray(parsed.embeddings[0])) {
+    if (config.verboseLogs) {
+      console.log(`[vector] embed ok dim=${parsed.embeddings[0].length} elapsed=${Date.now() - startedAt}ms`);
+    }
     return parsed.embeddings[0];
   }
   if (Array.isArray(parsed.embedding)) {
+    if (config.verboseLogs) {
+      console.log(`[vector] embed ok dim=${parsed.embedding.length} elapsed=${Date.now() - startedAt}ms`);
+    }
     return parsed.embedding;
   }
   throw new Error("Ollama embed response missing embedding array");
@@ -775,6 +801,7 @@ async function ensureChunkTable(connection) {
 }
 
 async function upsertChunk(connection, row) {
+  const startedAt = Date.now();
   await connection.execute(
     `INSERT INTO sonja_file_embedding_chunks (
       owner, file_id, chunk_index, chunk_count, chunk_size_bytes, s3_key, filename, content_type, summary,
@@ -815,9 +842,15 @@ async function upsertChunk(connection, row) {
       JSON.stringify(row.metadata || {}),
     ],
   );
+  if (row.verboseLogs) {
+    console.log(
+      `[sql] upsert file_id=${row.fileId} chunk=${row.chunkIndex}/${Math.max(0, row.chunkCount - 1)} subject=${row.subject} grade=${row.grade ?? "null"} educational=${row.educational} elapsed=${Date.now() - startedAt}ms`,
+    );
+  }
 }
 
 async function updateChunkMetadataOnly(connection, row) {
+  const startedAt = Date.now();
   await connection.execute(
     `UPDATE sonja_file_embedding_chunks
      SET
@@ -852,6 +885,11 @@ async function updateChunkMetadataOnly(connection, row) {
       row.embeddingModel,
     ],
   );
+  if (row.verboseLogs) {
+    console.log(
+      `[sql] metadata-update file_id=${row.fileId} chunk=${row.chunkIndex}/${Math.max(0, row.chunkCount - 1)} hash=${String(row.contentHash || "").slice(0, 12)} elapsed=${Date.now() - startedAt}ms`,
+    );
+  }
 }
 
 async function loadExistingChunkIndex(connection, owner, fileId, embeddingModel) {
@@ -974,6 +1012,7 @@ async function main() {
   if (config.classifierEnabled) {
     console.log(`Classifier model: ${config.classifierModel} timeout=${config.classifierTimeoutMs}ms`);
   }
+  console.log(`Verbose logs: ${config.verboseLogs ? "enabled" : "disabled"}`);
 
   const files = await listSonjaFiles(config);
   const selected = options.limit > 0 ? files.slice(0, options.limit) : files;
@@ -1030,12 +1069,20 @@ async function main() {
         existingByChunk.size === chunks.length &&
         chunkHashes.every((hash, idx) => existingByChunk.get(idx) === hash.toLowerCase());
       if (fileFullyUnchanged) {
+        if (config.verboseLogs) {
+          console.log(`[skip] unchanged file_id=${fileId} chunks=${chunks.length} (classifier/vector/sql skipped)`);
+        }
         skippedChunks += chunks.length;
         processedFiles += 1;
         continue;
       }
 
       const classified = await classifyMetadata(summary, filename, classifierCtx);
+      if (config.verboseLogs) {
+        console.log(
+          `[classify] effective file_id=${fileId} grade=${classified.grade ?? "null"} subject=${classified.subject} educational=${classified.educational}`,
+        );
+      }
 
       for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
         const chunk = chunks[chunkIndex];
@@ -1062,11 +1109,17 @@ async function main() {
               chunk_bytes: config.chunkBytes,
             },
           },
+          verboseLogs: config.verboseLogs,
         };
         const existingHash = existingByChunk.get(chunkIndex);
         if (existingHash && existingHash === contentHash.toLowerCase()) {
           if (!options.dryRun) {
             await updateChunkMetadataOnly(connection, metadataPayload);
+          }
+          if (config.verboseLogs) {
+            console.log(
+              `[vector] skip-embed file_id=${fileId} chunk=${chunkIndex}/${Math.max(0, chunks.length - 1)} reason=hash-match`,
+            );
           }
           skippedChunks += 1;
           continue;
@@ -1091,6 +1144,11 @@ async function main() {
             embeddingDim: embedding.length,
             embedding,
           });
+        }
+        if (config.verboseLogs) {
+          console.log(
+            `[vector] stored file_id=${fileId} chunk=${chunkIndex}/${Math.max(0, chunks.length - 1)} dim=${embedding.length}`,
+          );
         }
         embeddedChunks += 1;
       }
