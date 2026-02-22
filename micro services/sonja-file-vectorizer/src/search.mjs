@@ -198,7 +198,7 @@ async function fetchCandidates(connection, opts) {
     ORDER BY updated_at DESC
     LIMIT ?
   `;
-  const [rows] = await connection.execute(sql, params);
+  const [rows] = await connection.query(sql, params);
   return Array.isArray(rows) ? rows : [];
 }
 
