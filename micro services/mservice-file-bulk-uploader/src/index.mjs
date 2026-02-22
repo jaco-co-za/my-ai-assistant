@@ -142,8 +142,9 @@ function splitBuffer(buffer, chunkBytes) {
 
 function normalizeClassifierText(value) {
   return String(value || "")
-    .toLowerCase()
     .normalize("NFD")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .toLowerCase()
     .replace(/\p{Diacritic}/gu, "")
     .replace(/[_-]+/g, " ")
     .replace(/\s+/g, " ")
@@ -169,6 +170,34 @@ function extractGradeCandidates(text) {
     while ((match = pattern.exec(normalized)) !== null) {
       const grade = Number(match[1]);
       if (isValidGrade(grade)) {
+        out.push(grade);
+      }
+    }
+  }
+  const wordMap = new Map([
+    ["one", 1], ["two", 2], ["three", 3], ["four", 4], ["five", 5], ["six", 6],
+    ["seven", 7], ["eight", 8], ["nine", 9], ["ten", 10], ["eleven", 11], ["twelve", 12],
+    ["first", 1], ["second", 2], ["third", 3], ["fourth", 4], ["fifth", 5], ["sixth", 6],
+    ["seventh", 7], ["eighth", 8], ["ninth", 9], ["tenth", 10], ["eleventh", 11], ["twelfth", 12],
+    ["een", 1], ["twee", 2], ["drie", 3], ["vier", 4], ["vyf", 5], ["ses", 6],
+    ["sewe", 7], ["agt", 8], ["nege", 9], ["tien", 10], ["elf", 11], ["twaalf", 12],
+    ["eerste", 1], ["tweede", 2], ["derde", 3], ["vierde", 4], ["vyfde", 5], ["sesde", 6],
+    ["sewende", 7], ["agtste", 8], ["negende", 9], ["tiende", 10], ["elfde", 11], ["twaalfde", 12],
+  ]);
+  const gradeWords =
+    "one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|" +
+    "first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth|" +
+    "een|twee|drie|vier|vyf|ses|sewe|agt|nege|tien|elf|twaalf|" +
+    "eerste|tweede|derde|vierde|vyfde|sesde|sewende|agtste|negende|tiende|elfde|twaalfde";
+  const wordPattern = new RegExp(`\\b(?:grade|graad|gr)\\s*\\.?\\s*(${gradeWords})\\b`, "g");
+  const inverseWordPattern = new RegExp(`\\b(${gradeWords})\\s*(?:grade|graad)\\b`, "g");
+  const compactWordPattern = new RegExp(`\\b(${gradeWords})(?:grade|graad)(?=\\b|[a-z])`, "g");
+  const wordPatterns = [wordPattern, inverseWordPattern, compactWordPattern];
+  for (const pattern of wordPatterns) {
+    let match = null;
+    while ((match = pattern.exec(normalized)) !== null) {
+      const grade = wordMap.get(match[1]) ?? null;
+      if (grade !== null && isValidGrade(grade)) {
         out.push(grade);
       }
     }
