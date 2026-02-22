@@ -20,6 +20,7 @@ Optional:
 ```bash
 node src/index.mjs --limit 50
 node src/index.mjs --dry-run
+node src/index.mjs --metadata-only
 ```
 
 ## Environment
@@ -39,3 +40,11 @@ node src/index.mjs --dry-run
 
 If `FILE_SERVICE_AUTH` is not set, the tool attempts to read `AUTH_BEARER_TOKEN` from `micro services/mservice-file/.env`.
 If MySQL env vars are not set, it attempts to read from `servers/mysql-docker/.env`.
+
+## Backfill Existing Metadata
+
+After parser improvements, you can backfill `grade` and `subject` for already-embedded rows:
+
+```bash
+docker exec -i mysql-local mysql -u sonja_vectorizer -p'Vectorizer_2026_Strong!' -D app_db < "micro services/sonja-file-vectorizer/scripts/backfill-metadata.sql"
+```

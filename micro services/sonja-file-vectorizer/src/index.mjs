@@ -33,7 +33,7 @@ function usage() {
 }
 
 function parseArgs(argv) {
-  const out = { limit: 0, dryRun: false };
+  const out = { limit: 0, dryRun: false, metadataOnly: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = String(argv[i] || "").trim();
     if (arg === "--help" || arg === "-h") {
@@ -42,6 +42,10 @@ function parseArgs(argv) {
     }
     if (arg === "--dry-run") {
       out.dryRun = true;
+      continue;
+    }
+    if (arg === "--metadata-only") {
+      out.metadataOnly = true;
       continue;
     }
     if (arg === "--limit") {
@@ -87,55 +91,212 @@ function splitBuffer(buffer, chunkBytes) {
   return chunks.length > 0 ? chunks : [Buffer.alloc(0)];
 }
 
-function parseGrade(text) {
-  const normalized = String(text || "").toLowerCase();
-  const match = normalized.match(/\b(?:grade|graad)\s*(\d{1,2})\b/);
-  if (!match) {
+function normalizeClassifierText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isValidGrade(value) {
+  return Number.isFinite(value) && value >= 0 && value <= 12;
+}
+
+function extractGradeCandidates(text) {
+  const normalized = normalizeClassifierText(text);
+  if (!normalized) {
+    return [];
+  }
+  const out = [];
+  const directNumericPatterns = [
+    /\b(?:grade|graad|gr)\s*\.?\s*(\d{1,2})\b/g,
+    /\bg\s*\.?\s*(\d{1,2})\b/g,
+  ];
+  for (const pattern of directNumericPatterns) {
+    let match = null;
+    while ((match = pattern.exec(normalized)) !== null) {
+      const grade = Number(match[1]);
+      if (isValidGrade(grade)) {
+        out.push(grade);
+      }
+    }
+  }
+  const wordMap = new Map([
+    ["one", 1], ["two", 2], ["three", 3], ["four", 4], ["five", 5], ["six", 6],
+    ["seven", 7], ["eight", 8], ["nine", 9], ["ten", 10], ["eleven", 11], ["twelve", 12],
+    ["een", 1], ["twee", 2], ["drie", 3], ["vier", 4], ["vyf", 5], ["ses", 6],
+    ["sewe", 7], ["agt", 8], ["nege", 9], ["tien", 10], ["elf", 11], ["twaalf", 12],
+  ]);
+  const wordPattern =
+    /\b(?:grade|graad|gr)\s*\.?\s*(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|een|twee|drie|vier|vyf|ses|sewe|agt|nege|tien|elf|twaalf)\b/g;
+  let wordMatch = null;
+  while ((wordMatch = wordPattern.exec(normalized)) !== null) {
+    const grade = wordMap.get(wordMatch[1]) ?? null;
+    if (grade !== null && isValidGrade(grade)) {
+      out.push(grade);
+    }
+  }
+  return out;
+}
+
+function pickMostLikelyGrade(candidates) {
+  if (!Array.isArray(candidates) || candidates.length === 0) {
     return null;
   }
-  const grade = Number(match[1]);
-  return Number.isFinite(grade) && grade >= 0 && grade <= 12 ? grade : null;
+  const counts = new Map();
+  for (const grade of candidates) {
+    counts.set(grade, (counts.get(grade) || 0) + 1);
+  }
+  let bestGrade = null;
+  let bestCount = -1;
+  for (const [grade, count] of counts.entries()) {
+    if (count > bestCount) {
+      bestGrade = grade;
+      bestCount = count;
+      continue;
+    }
+    if (count === bestCount && bestGrade !== null && grade > bestGrade) {
+      // Prefer higher grade when tied.
+      bestGrade = grade;
+    }
+  }
+  return bestGrade;
 }
 
 function detectGrade(summary, filename) {
-  const fromSummary = parseGrade(summary);
-  if (fromSummary !== null) {
-    return fromSummary;
+  const filenameCandidates = extractGradeCandidates(filename);
+  if (filenameCandidates.length > 0) {
+    return pickMostLikelyGrade(filenameCandidates);
   }
-  return parseGrade(filename);
+  const summaryCandidates = extractGradeCandidates(summary);
+  if (summaryCandidates.length > 0) {
+    return pickMostLikelyGrade(summaryCandidates);
+  }
+  return null;
 }
 
-function parseSubject(text) {
-  const v = String(text || "").toLowerCase();
-  if (/\b(math|maths|mathematics|wiskunde|algebra|geometry|fractions?)\b/.test(v)) return "math";
-  if (/\b(afrikaans)\b/.test(v)) return "afrikaans";
-  if (/\b(english)\b/.test(v)) return "english";
-  if (/\b(science|natuurwetenskap)\b/.test(v)) return "science";
-  if (/\b(history|geskiedenis)\b/.test(v)) return "history";
-  if (/\b(geography|aardrykskunde)\b/.test(v)) return "geography";
-  if (/\b(technology|tegnologie)\b/.test(v)) return "technology";
-  if (/\b(life orientation|lewensorientering)\b/.test(v)) return "life-orientation";
-  return "unknown";
+const SUBJECT_RULES = [
+  {
+    key: "math",
+    patterns: [
+      /\bmath\b/, /\bmaths\b/, /\bmathematics\b/, /\bwiskunde\b/, /\bwisk\b/,
+      /\balgebra\b/, /\bgeometry\b/, /\bgeometrie\b/, /\bfractions?\b/,
+      /\boptel\b/, /\baftrek\b/, /\bdeel\b/, /\bvermenigvuldig\b/,
+      /\baddition\b/, /\bsubtraction\b/, /\bmultiplication\b/, /\bdivision\b/,
+      /\barithmetic\b/,
+    ],
+  },
+  { key: "afrikaans", patterns: [/\bafrikaans\b/, /\bafr\b/] },
+  { key: "english", patterns: [/\benglish\b/, /\beng\b/] },
+  { key: "science", patterns: [/\bscience\b/, /\bnatuurwetenskap\b/, /\bnatural sciences\b/, /\bnst\b/] },
+  { key: "history", patterns: [/\bhistory\b/, /\bgeskiedenis\b/] },
+  { key: "geography", patterns: [/\bgeography\b/, /\baardrykskunde\b/] },
+  { key: "technology", patterns: [/\btechnology\b/, /\btegnologie\b/] },
+  { key: "life-orientation", patterns: [/\blife orientation\b/, /\blewensorientering\b/, /\blo\b/] },
+  { key: "arts", patterns: [/\bcreative arts\b/, /\bskeppende kunste\b/, /\barts\b/] },
+  { key: "ems", patterns: [/\beconomic and management sciences\b/, /\bems\b/] },
+  { key: "physical-science", patterns: [/\bphysical sciences\b/, /\bfisiese wetenskappe\b/] },
+  { key: "accounting", patterns: [/\baccounting\b/, /\brekeningkunde\b/] },
+];
+
+function scoreSubject(text, weight) {
+  const normalized = normalizeClassifierText(text);
+  const scores = new Map();
+  if (!normalized) {
+    return scores;
+  }
+  for (const rule of SUBJECT_RULES) {
+    for (const pattern of rule.patterns) {
+      if (pattern.test(normalized)) {
+        scores.set(rule.key, (scores.get(rule.key) || 0) + weight);
+      }
+    }
+  }
+  return scores;
+}
+
+function mergeScores(a, b) {
+  const out = new Map(a);
+  for (const [k, v] of b.entries()) {
+    out.set(k, (out.get(k) || 0) + v);
+  }
+  return out;
 }
 
 function detectSubject(summary, filename) {
-  const fromSummary = parseSubject(summary);
-  if (fromSummary !== "unknown") {
-    return fromSummary;
+  const fromFilename = scoreSubject(filename, 3);
+  const fromSummary = scoreSubject(summary, 2);
+  const combined = mergeScores(fromFilename, fromSummary);
+  let best = "unknown";
+  let bestScore = 0;
+  for (const [key, score] of combined.entries()) {
+    if (score > bestScore) {
+      best = key;
+      bestScore = score;
+    }
   }
-  return parseSubject(filename);
+  return best;
 }
 
-function parseEducational(text, filename) {
-  const value = `${String(text || "")} ${String(filename || "")}`.toLowerCase();
-  if (
-    /\b(bank statement|credit facility|quotation|invoice|tax invoice|payment advice|proof of payment|salary slip|payslip|policy schedule)\b/.test(
-      value,
-    )
-  ) {
+function parseEducational(summary, filename, grade, subject) {
+  const value = normalizeClassifierText(`${summary} ${filename}`);
+  const negativeSignals = [
+    /\bbank statement\b/,
+    /\bcredit facility\b/,
+    /\bquotation\b/,
+    /\binvoice\b/,
+    /\btax invoice\b/,
+    /\bpayment advice\b/,
+    /\bproof of payment\b/,
+    /\bsalary slip\b/,
+    /\bpayslip\b/,
+    /\bpolicy schedule\b/,
+    /\bid document\b/,
+    /\bidentity document\b/,
+    /\bcontract\b/,
+    /\blease agreement\b/,
+  ];
+  const positiveSignals = [
+    /\bworksheet\b/,
+    /\bworksheets\b/,
+    /\bworkbook\b/,
+    /\blesson\b/,
+    /\bclasswork\b/,
+    /\bhomework\b/,
+    /\bactivity\b/,
+    /\bassessment\b/,
+    /\bexam\b/,
+    /\btoets\b/,
+    /\boefening\b/,
+    /\bbegripslees\b/,
+    /\bleer\b/,
+    /\bschool\b/,
+  ];
+  let negative = 0;
+  let positive = 0;
+  for (const pattern of negativeSignals) {
+    if (pattern.test(value)) {
+      negative += 1;
+    }
+  }
+  for (const pattern of positiveSignals) {
+    if (pattern.test(value)) {
+      positive += 1;
+    }
+  }
+  if (negative > positive) {
     return 0;
   }
-  return 1;
+  if (positive > 0) {
+    return 1;
+  }
+  if (grade !== null || subject !== "unknown") {
+    return 1;
+  }
+  return 0;
 }
 
 async function loadEnvFromFile(filePath) {
@@ -347,6 +508,46 @@ async function upsertChunk(connection, row) {
   );
 }
 
+async function backfillChunkMetadata(connection, owner) {
+  const pageSize = 1000;
+  let offset = 0;
+  let updated = 0;
+  while (true) {
+    const [rows] = await connection.execute(
+      `SELECT id, summary, filename
+       FROM sonja_file_embedding_chunks
+       WHERE owner = ?
+       ORDER BY id ASC
+       LIMIT ? OFFSET ?`,
+      [owner, pageSize, offset],
+    );
+    const list = Array.isArray(rows) ? rows : [];
+    if (list.length === 0) {
+      break;
+    }
+    for (const row of list) {
+      const id = Number(row.id);
+      if (!Number.isFinite(id) || id <= 0) {
+        continue;
+      }
+      const summary = String(row.summary || "");
+      const filename = String(row.filename || "");
+      const grade = detectGrade(summary, filename);
+      const subject = detectSubject(summary, filename);
+      const educational = parseEducational(summary, filename, grade, subject);
+      await connection.execute(
+        `UPDATE sonja_file_embedding_chunks
+         SET grade = ?, subject = ?, educational = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [grade, subject, educational, id],
+      );
+      updated += 1;
+    }
+    offset += list.length;
+  }
+  return updated;
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const config = await resolveConfig();
@@ -370,6 +571,12 @@ async function main() {
 
   try {
     await ensureChunkTable(connection);
+    if (options.metadataOnly) {
+      console.log("Running metadata-only reclassification...");
+      const updated = await backfillChunkMetadata(connection, config.owner);
+      console.log(`Done. Reclassified rows=${updated}.`);
+      return;
+    }
     let processedFiles = 0;
     let embeddedChunks = 0;
 
@@ -385,7 +592,7 @@ async function main() {
       const baseContentType = String(file.content_type || "application/octet-stream");
       const grade = detectGrade(summary, filename);
       const subject = detectSubject(summary, filename);
-      const educational = parseEducational(summary, filename);
+      const educational = parseEducational(summary, filename, grade, subject);
 
       console.log(`[${i + 1}/${selected.length}] ${filename} (id=${fileId})`);
       const downloaded = await downloadFile(config, fileId);
