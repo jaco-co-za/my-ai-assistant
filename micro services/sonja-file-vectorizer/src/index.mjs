@@ -109,7 +109,8 @@ function splitBuffer(buffer, chunkBytes) {
 
 function buildChunkSizeAttempts(config) {
   const maxBytesByContext = Math.max(1024, Math.floor((config.embedMaxInputChars - 512) * 0.75));
-  const first = Math.max(1024, Math.min(config.chunkBytes, maxBytesByContext));
+  const firstTarget = Math.max(1024, config.chunkBytes * 2);
+  const first = Math.max(1024, Math.min(firstTarget, maxBytesByContext));
   const attempts = [first];
   let current = first;
   const minChunk = 4096;
