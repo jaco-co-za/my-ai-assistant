@@ -67,7 +67,7 @@ const SONJA_REFINEMENT_ENABLED = String(process.env.SONJA_REFINEMENT_ENABLED || 
 const SONJA_STRICT_LLM_COMPLETION = String(process.env.SONJA_STRICT_LLM_COMPLETION || 'true').toLowerCase() === 'true';
 const SONJA_KEYWORD_MODEL = (process.env.SONJA_KEYWORD_MODEL || 'qwen2.5:7b').trim();
 const SONJA_MATCH_MODEL = (process.env.SONJA_MATCH_MODEL || 'qwen2.5:7b').trim();
-const SONJA_MATCH_CONFIDENCE = Number.parseInt(process.env.SONJA_MATCH_CONFIDENCE || '75', 10);
+const SONJA_MATCH_CONFIDENCE = Number.parseInt(process.env.SONJA_MATCH_CONFIDENCE || '90', 10);
 const SONJA_SEARCH_BATCH_SIZE = Math.max(1, Number.parseInt(process.env.SONJA_SEARCH_BATCH_SIZE || '5', 10));
 const SONJA_SEARCH_MAX_SCAN_ROWS = Math.max(SONJA_SEARCH_BATCH_SIZE, Number.parseInt(process.env.SONJA_SEARCH_MAX_SCAN_ROWS || '200', 10));
 const SONJA_EMBEDDING_SEARCH_ENABLED = String(process.env.SONJA_EMBEDDING_SEARCH_ENABLED || 'true').toLowerCase() !== 'false';
@@ -1209,57 +1209,59 @@ function extractLanguageConstraintsFromPrompt(prompt: string): string[] {
   return patterns.filter((item) => item.rx.test(text)).map((item) => item.key);
 }
 
-function summaryMatchesGradeConstraint(summary: string, gradeConstraints: number[]): boolean {
-  if (!Array.isArray(gradeConstraints) || gradeConstraints.length === 0) {
-    return true;
-  }
-  const summaryGrades = parseGradeNumbersFromText(summary);
-  if (summaryGrades.length === 0) {
-    return false;
-  }
-  const allowed = new Set(gradeConstraints);
-  return summaryGrades.some((grade) => allowed.has(grade));
-}
+type SonjaPromptPlan = {
+  keywords: string[];
+  grades: number[];
+  subjects: string[];
+  languages: string[];
+};
 
-function summaryMatchesLanguageConstraint(summary: string, languageConstraints: string[]): boolean {
-  if (!Array.isArray(languageConstraints) || languageConstraints.length === 0) {
-    return true;
-  }
-  const found = new Set(extractLanguageConstraintsFromPrompt(summary));
-  if (found.size === 0) {
-    return false;
-  }
-  return languageConstraints.some((lang) => found.has(lang));
-}
-
-async function extractSonjaSearchKeywords(prompt: string): Promise<string[]> {
+async function extractSonjaPromptPlan(prompt: string): Promise<SonjaPromptPlan> {
   const fallback = extractPromptSearchTokens(prompt).slice(0, 8);
   const parsed = await sendSonjaJsonRequestToAssistant({
     model: SONJA_KEYWORD_MODEL,
     system:
-      'Extract core searchable keywords from a user file query. Exclude adjectives/filler words. Return ONLY JSON: {"keywords":["..."]}.',
+      'Extract a strict search plan from a user file query. Return ONLY JSON: {"keywords":["..."],"grades":[number],"subjects":["..."],"languages":["..."]}.',
     user: JSON.stringify({
       prompt,
       rules: [
         'Keep only nouns/key topics/grade/subject/language tokens.',
         'Exclude adjectives, greetings, and filler.',
         'Do not include "sonja", "file", or "files".',
-        'Return 3-8 keywords.',
+        'If user specifies grade, include in grades.',
+        'If user specifies subject, include in subjects.',
+        'If user specifies language, include in languages.',
+        'Return 3-8 keywords when possible.',
       ],
     }),
     temperature: 0,
   });
-  const raw = Array.isArray(parsed?.keywords) ? parsed?.keywords : [];
-  const cleaned = raw
+  const rawKeywords = Array.isArray(parsed?.keywords) ? parsed?.keywords : [];
+  const keywords = rawKeywords
     .map((value) => String(value || '').trim().toLowerCase())
     .filter((value) => value.length >= 2)
     .map((value) => value.replace(/\s+/g, ' '))
     .filter((value) => value !== 'sonja' && value !== 'file' && value !== 'files');
-  const unique = Array.from(new Set(cleaned));
-  if (unique.length > 0) {
-    return unique.slice(0, 8);
-  }
-  return fallback;
+  const grades = Array.isArray(parsed?.grades)
+    ? parsed.grades
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value) && value >= 0 && value <= 12)
+      .map((value) => Math.floor(value))
+    : [];
+  const subjects = Array.isArray(parsed?.subjects)
+    ? parsed.subjects.map((value) => String(value || '').trim().toLowerCase()).filter((value) => value.length > 0)
+    : [];
+  const languages = Array.isArray(parsed?.languages)
+    ? parsed.languages.map((value) => String(value || '').trim().toLowerCase()).filter((value) => value.length > 0)
+    : [];
+
+  const uniqueKeywords = Array.from(new Set(keywords));
+  return {
+    keywords: (uniqueKeywords.length > 0 ? uniqueKeywords : fallback).slice(0, 8),
+    grades: Array.from(new Set(grades)),
+    subjects: Array.from(new Set(subjects)),
+    languages: Array.from(new Set(languages)),
+  };
 }
 
 async function scoreSonjaCandidateMatch(args: {
@@ -1270,18 +1272,6 @@ async function scoreSonjaCandidateMatch(args: {
   subjectConstraints: string[];
   languageConstraints: string[];
 }): Promise<{ score: number; matched: boolean; reason: string }> {
-  const strictGradeLanguage = args.gradeConstraints.length > 0 && args.languageConstraints.length > 0;
-  if (strictGradeLanguage) {
-    const gradeOk = summaryMatchesGradeConstraint(args.summary, args.gradeConstraints);
-    const languageOk = summaryMatchesLanguageConstraint(args.summary, args.languageConstraints);
-    if (!gradeOk || !languageOk) {
-      return {
-        score: 0,
-        matched: false,
-        reason: `strict grade/language mismatch (grade_ok=${gradeOk}, language_ok=${languageOk})`,
-      };
-    }
-  }
   const parsed = await sendSonjaJsonRequestToAssistant({
     model: SONJA_MATCH_MODEL,
     system:
@@ -1298,10 +1288,13 @@ async function scoreSonjaCandidateMatch(args: {
         language: args.languageConstraints,
       },
       rules: [
-        'If grade constraints are present, do not match if grade intent conflicts.',
-        'If subject constraints are present, do not match if subject intent conflicts.',
-        'If language constraints are present, do not match if language intent conflicts.',
-        'If BOTH grade and language constraints are present, matching is strict for both.',
+        'Honor constraints with strict AND logic.',
+        'If user supplied grade(s), candidate must satisfy grade.',
+        'If user supplied subject(s), candidate must satisfy subject.',
+        'If user supplied language(s), candidate must satisfy language.',
+        'If 2 constraints are supplied, both must match.',
+        'If 3 constraints are supplied, all 3 must match.',
+        `Only set matched=true when score >= ${SONJA_MATCH_CONFIDENCE}.`,
       ],
     }),
     temperature: 0.05,
@@ -1319,10 +1312,11 @@ async function runSonjaSummaryIterativeSearch(args: {
   dateConstraint: DateConstraint | null;
 }): Promise<{ rows: any[]; effectiveSql: string }> {
   const normalizedOwner = normalizeOwner(args.owner);
-  const keywords = await extractSonjaSearchKeywords(args.prompt);
-  const gradeConstraints = parseGradeNumbersFromText(args.prompt);
-  const subjectConstraints = parseSubjectFiltersFromPrompt(args.prompt);
-  const languageConstraints = extractLanguageConstraintsFromPrompt(args.prompt);
+  const plan = await extractSonjaPromptPlan(args.prompt);
+  const keywords = plan.keywords;
+  const gradeConstraints = plan.grades;
+  const subjectConstraints = plan.subjects;
+  const languageConstraints = plan.languages;
   const selected = new Map<number, { row: any; score: number; reason: string }>();
   let scanned = 0;
   let cursorId: number | null = null;
@@ -1386,7 +1380,10 @@ async function runSonjaSummaryIterativeSearch(args: {
   const rows = Array.from(selected.values())
     .sort((a, b) => b.score - a.score)
     .map((item) => item.row);
-  const debugSql = `/* sonja iterative summary search keywords=${JSON.stringify(keywords)} scanned=${scanned} selected=${rows.length} */ ${sqlParts.join(' ; ')}`;
+  const debugSql =
+    `/* sonja iterative summary search keywords=${JSON.stringify(keywords)} grades=${JSON.stringify(gradeConstraints)} ` +
+    `subjects=${JSON.stringify(subjectConstraints)} languages=${JSON.stringify(languageConstraints)} scanned=${scanned} selected=${rows.length} */ ` +
+    `${sqlParts.join(' ; ')}`;
   return { rows: await filterRowsForOwnerSearch({ owner: normalizedOwner, rows, dbCtx: args.dbCtx }), effectiveSql: debugSql };
 }
 
