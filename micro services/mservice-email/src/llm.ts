@@ -3448,10 +3448,86 @@ function extractSenderFilterTerm(prompt: string): string | null {
     return null;
   }
   const term = match[1].trim().toLowerCase();
+  const nonSenderTerms = new Set([
+    'today',
+    'yesterday',
+    'monday',
+    'tuesday',
+    'wednesday',
+    'thursday',
+    'friday',
+    'saturday',
+    'sunday',
+    'mon',
+    'tue',
+    'wed',
+    'thu',
+    'fri',
+    'sat',
+    'sun',
+    'last',
+    'this',
+  ]);
+  if (nonSenderTerms.has(term)) {
+    return null;
+  }
   if (term.length < 3) {
     return null;
   }
   return term;
+}
+
+function extractWeekdayDateRange(prompt: string): { startIso: string; endIso: string } | null {
+  const text = String(prompt || '').toLowerCase();
+  if (!text) {
+    return null;
+  }
+  const weekdayMap: Record<string, number> = {
+    sunday: 0,
+    sun: 0,
+    monday: 1,
+    mon: 1,
+    tuesday: 2,
+    tue: 2,
+    wednesday: 3,
+    wed: 3,
+    thursday: 4,
+    thu: 4,
+    friday: 5,
+    fri: 5,
+    saturday: 6,
+    sat: 6,
+  };
+  const explicitToday = /\b(today)\b/.test(text);
+  const explicitYesterday = /\b(yesterday)\b/.test(text);
+  if (explicitToday || explicitYesterday) {
+    const now = new Date();
+    const offset = explicitYesterday ? -1 : 0;
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset, 0, 0, 0, 0);
+    const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset + 1, 0, 0, 0, 0);
+    return { startIso: start.toISOString(), endIso: end.toISOString() };
+  }
+  const weekdayMatch = text.match(/\b(?:from|on|for)?\s*(last\s+)?(monday|mon|tuesday|tue|wednesday|wed|thursday|thu|friday|fri|saturday|sat|sunday|sun)\b/i);
+  if (!weekdayMatch?.[2]) {
+    return null;
+  }
+  const target = weekdayMap[weekdayMatch[2].toLowerCase()];
+  if (!Number.isFinite(target)) {
+    return null;
+  }
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+  const currentDow = today.getDay();
+  let delta = (currentDow - target + 7) % 7;
+  const hasLast = Boolean(weekdayMatch[1] && weekdayMatch[1].trim().length > 0);
+  if (delta === 0 && hasLast) {
+    delta = 7;
+  }
+  const start = new Date(today);
+  start.setDate(today.getDate() - delta);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 1);
+  return { startIso: start.toISOString(), endIso: end.toISOString() };
 }
 
 function promptHasExplicitFolderConstraint(prompt: string): boolean {
@@ -4909,6 +4985,7 @@ export function createLlmHandler({
       const requestedLimitDirect = extractRequestedEmailLimit(prompt);
       const senderTermDirect = extractSenderFilterTerm(prompt);
       const todayMyMails = isTodayMyMailsPrompt(prompt);
+      const weekdayRange = extractWeekdayDateRange(prompt);
       const now = new Date();
       const startOfLocalDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
       const startOfNextLocalDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0);
@@ -4924,18 +5001,20 @@ export function createLlmHandler({
       const directWhere = senderTermDirect
         ? `WHERE LOWER(COALESCE(email_messages.from_raw, '')) LIKE ? AND email_messages.received_at IS NOT NULL `
         : `WHERE email_messages.received_at IS NOT NULL `;
-      const directWhereWithToday = todayMyMails
+      const directWhereWithDate = (todayMyMails || weekdayRange)
         ? `${directWhere}AND email_messages.received_at >= ? AND email_messages.received_at < ? `
         : directWhere;
       const directOrder = `ORDER BY email_messages.received_at DESC, email_messages.id DESC `;
-      const directLimit = wantAllDirect || todayMyMails ? '' : `LIMIT ${safeLimit}`;
-      const directSql = `${directSqlBase}${directWhereWithToday}${directOrder}${directLimit}`.trim();
+      const directLimit = wantAllDirect || todayMyMails || Boolean(weekdayRange) ? '' : `LIMIT ${safeLimit}`;
+      const directSql = `${directSqlBase}${directWhereWithDate}${directOrder}${directLimit}`.trim();
       const directRowsParams: unknown[] = [];
       if (senderTermDirect) {
         directRowsParams.push(`%${senderTermDirect}%`);
       }
       if (todayMyMails) {
         directRowsParams.push(startOfLocalDay.toISOString(), startOfNextLocalDay.toISOString());
+      } else if (weekdayRange) {
+        directRowsParams.push(weekdayRange.startIso, weekdayRange.endIso);
       }
       const directRows = await dbAll(directSql, ...directRowsParams);
       const wantsDetailed = isDetailedEmailRequest(prompt);
