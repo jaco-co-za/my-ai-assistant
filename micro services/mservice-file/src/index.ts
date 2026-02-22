@@ -1631,19 +1631,33 @@ function buildContentFallbackQuery(prompt: string, dateConstraint: DateConstrain
 
 function buildSummaryFallbackQuery(prompt: string, dateConstraint: DateConstraint | null): { sql: string; params: string[] } | null {
   const tokens = extractPromptSearchTokens(prompt);
-  if (tokens.length === 0) {
+  const gradeNumbers = parseGradeNumbersFromText(prompt);
+  if (tokens.length === 0 && gradeNumbers.length === 0) {
     return null;
   }
-  const clauses: string[] = [];
+  const tokenClauses: string[] = [];
+  const gradeClauses: string[] = [];
   const params: string[] = [];
   for (const token of tokens) {
-    clauses.push(`lower(coalesce(summary,'')) LIKE ?`);
+    tokenClauses.push(`lower(coalesce(summary,'')) LIKE ?`);
     params.push(tokenToLikePattern(token));
   }
+  for (const grade of gradeNumbers) {
+    gradeClauses.push(`(lower(coalesce(summary,'')) LIKE ? OR lower(coalesce(summary,'')) LIKE ?)`);
+    params.push(`%grade ${grade}%`, `%graad ${grade}%`);
+  }
+  const whereParts: string[] = [];
+  if (tokenClauses.length > 0) {
+    whereParts.push(`(${tokenClauses.join(' OR ')})`);
+  }
+  if (gradeClauses.length > 0) {
+    whereParts.push(`(${gradeClauses.join(' OR ')})`);
+  }
+  const baseWhere = whereParts.length > 0 ? whereParts.join(' AND ') : '1=0';
   return {
     sql:
       'SELECT id, bucket, s3_key, filename, content_type, size_bytes, caption, summary, content_scope, summary_status, created_at ' +
-      `FROM files WHERE (${clauses.join(' OR ')})` +
+      `FROM files WHERE ${baseWhere}` +
       (dateConstraint ? ` AND (${dateConstraint.clause})` : '') +
       ` ORDER BY id DESC LIMIT ${FILE_SQL_MAX_ROWS}`,
     params: [...params, ...(dateConstraint ? dateConstraint.params : [])],
