@@ -887,14 +887,37 @@ async function deleteStaleChunks(connection, owner, fileId, embeddingModel, chun
 async function backfillChunkMetadata(connection, owner, classifierCtx) {
   const pageSize = 1000;
   let offset = 0;
+  let processed = 0;
   let updated = 0;
+  let unchanged = 0;
+  const startedAt = Date.now();
+  const [countRows] = await connection.query(
+    "SELECT COUNT(*) AS total FROM sonja_file_embedding_chunks WHERE owner = ?",
+    [String(owner || "sonja")],
+  );
+  const totalRows = Number(Array.isArray(countRows) && countRows[0] ? countRows[0].total : 0) || 0;
+  const progressEvery = 100;
+
+  function logProgress(force = false) {
+    if (!force && (processed === 0 || processed % progressEvery !== 0)) {
+      return;
+    }
+    const elapsedSec = Math.max(1, Math.floor((Date.now() - startedAt) / 1000));
+    const rate = (processed / elapsedSec).toFixed(1);
+    const pct = totalRows > 0 ? ((processed / totalRows) * 100).toFixed(1) : "0.0";
+    console.log(
+      `[metadata] processed=${processed}/${totalRows} (${pct}%) updated=${updated} unchanged=${unchanged} rate=${rate}/s`,
+    );
+  }
+
+  console.log(`[metadata] total rows to inspect: ${totalRows}`);
   while (true) {
     const safePageSize = Math.max(1, Math.floor(pageSize));
     const safeOffset = Math.max(0, Math.floor(offset));
     const safeOwner = String(owner || "sonja");
     const escapedOwner = safeOwner.replace(/\\/g, "\\\\").replace(/'/g, "''");
     const [rows] = await connection.query(
-      `SELECT id, summary, filename
+      `SELECT id, summary, filename, grade, subject, educational
        FROM sonja_file_embedding_chunks
        WHERE owner = '${escapedOwner}'
        ORDER BY id ASC
@@ -912,17 +935,31 @@ async function backfillChunkMetadata(connection, owner, classifierCtx) {
       const summary = String(row.summary || "");
       const filename = String(row.filename || "");
       const classified = await classifyMetadata(summary, filename, classifierCtx);
-      await connection.execute(
-        `UPDATE sonja_file_embedding_chunks
-         SET grade = ?, subject = ?, educational = ?, updated_at = CURRENT_TIMESTAMP
-         WHERE id = ?`,
-        [classified.grade, classified.subject, classified.educational, id],
-      );
-      updated += 1;
+      const prevGrade = row.grade === null || row.grade === undefined ? null : Number(row.grade);
+      const prevSubject = String(row.subject || "unknown");
+      const prevEducational = row.educational === null || row.educational === undefined ? 0 : Number(row.educational);
+      const gradeChanged = prevGrade !== classified.grade;
+      const subjectChanged = prevSubject !== classified.subject;
+      const educationalChanged = prevEducational !== classified.educational;
+      if (gradeChanged || subjectChanged || educationalChanged) {
+        await connection.execute(
+          `UPDATE sonja_file_embedding_chunks
+           SET grade = ?, subject = ?, educational = ?, updated_at = CURRENT_TIMESTAMP
+           WHERE id = ?`,
+          [classified.grade, classified.subject, classified.educational, id],
+        );
+        updated += 1;
+      } else {
+        unchanged += 1;
+      }
+      processed += 1;
+      logProgress(false);
     }
     offset += list.length;
   }
-  return updated;
+  logProgress(true);
+  const elapsedSec = Math.max(1, Math.floor((Date.now() - startedAt) / 1000));
+  return { totalRows, processed, updated, unchanged, elapsedSec };
 }
 
 async function main() {
@@ -956,8 +993,10 @@ async function main() {
     const classifierCtx = await createClassifierContext(config);
     if (options.metadataOnly) {
       console.log("Running metadata-only reclassification...");
-      const updated = await backfillChunkMetadata(connection, config.owner, classifierCtx);
-      console.log(`Done. Reclassified rows=${updated}.`);
+      const stats = await backfillChunkMetadata(connection, config.owner, classifierCtx);
+      console.log(
+        `Done. Processed=${stats.processed}/${stats.totalRows}, updated=${stats.updated}, unchanged=${stats.unchanged}, elapsed=${stats.elapsedSec}s.`,
+      );
       return;
     }
     let processedFiles = 0;
