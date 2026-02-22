@@ -460,6 +460,7 @@ async function classifyWithOllama(config, summary, filename, allowedSubjects) {
   const payload = buildClassifierPromptPayload(summary, filename, allowedSubjects);
   if (config.verboseLogs) {
     console.log(`[classify] request file="${filename}" model=${config.classifierModel}`);
+    console.log(`[classify][prompt] ${JSON.stringify(payload)}`);
   }
   const response = await fetchWithTimeout(
     `${config.ollamaUrl}/api/chat`,
@@ -484,6 +485,9 @@ async function classifyWithOllama(config, summary, filename, allowedSubjects) {
     config.classifierTimeoutMs,
   );
   const raw = await response.text();
+  if (config.verboseLogs) {
+    console.log(`[classify][response-raw] ${raw}`);
+  }
   if (!response.ok) {
     throw new Error(`classification call failed (${response.status}): ${raw}`);
   }
