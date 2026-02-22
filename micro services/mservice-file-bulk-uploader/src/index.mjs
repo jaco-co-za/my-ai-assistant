@@ -4,7 +4,6 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import mysql from "mysql2/promise";
 
 const KNOWN_EXTENSIONS = new Set([
   ".jpg",
@@ -40,10 +39,6 @@ const HTTP_TIMEOUT_MS = 60 * 1000;
 const PENDING_LOG_INTERVAL_MS = 30 * 1000;
 const DEFAULT_BASE_HOST = "192.168.55.113";
 const LEGACY_BASE_HOST = "192.168.55.73";
-const DEFAULT_OLLAMA_URL = `http://${DEFAULT_BASE_HOST}:11434`;
-const DEFAULT_OLLAMA_MODEL = "qwen3-embedding";
-const DEFAULT_LARGE_FILE_BYTES = 1024 * 1024;
-const DEFAULT_CHUNK_BYTES = 250 * 1024;
 
 function printUsage() {
   console.log("Usage: node src/index.mjs <absolute-path> [limit=1] [Sonja] [recursive=true|false]");
@@ -773,17 +768,7 @@ async function main() {
   const fileBaseUrl = fileUploadUrl ? fileUploadUrl.replace(/\/file\/upload$/i, "") : "";
   const statusAuth = String(env.FILE_MICRO_SERVICE_AUTH || "").trim() ||
     (String(env.WEBHOOK_BEARER_TOKEN || "").trim() ? `Bearer ${String(env.WEBHOOK_BEARER_TOKEN || "").trim()}` : "");
-  const vectorEnabled = !["0", "false", "no"].includes(String(trimQuotes(env.BULK_UPLOADER_VECTORIZATION_ENABLED || "true")).toLowerCase());
-  const ollamaUrl = ensureUrl(trimQuotes(normalizeLegacyHost(env.OLLAMA_URL || DEFAULT_OLLAMA_URL)));
-  const ollamaModel = trimQuotes(env.OLLAMA_MODEL || DEFAULT_OLLAMA_MODEL) || DEFAULT_OLLAMA_MODEL;
-  const largeFileBytes = toInt(trimQuotes(env.LARGE_FILE_BYTES), DEFAULT_LARGE_FILE_BYTES);
-  const chunkBytes = toInt(trimQuotes(env.CHUNK_BYTES), DEFAULT_CHUNK_BYTES);
-  const mysqlHostRaw = trimQuotes(env.MYSQL_HOST || mysqlEnv.VECTORIZER_MYSQL_HOST || mysqlEnv.MYSQL_HOST || "127.0.0.1");
-  const mysqlHost = mysqlHostRaw === "%" ? "127.0.0.1" : mysqlHostRaw;
-  const mysqlPort = toInt(trimQuotes(env.MYSQL_PORT || mysqlEnv.MYSQL_PORT), 3306);
-  const mysqlDatabase = trimQuotes(env.MYSQL_DATABASE || mysqlEnv.MYSQL_DATABASE || "");
-  const mysqlUser = trimQuotes(env.MYSQL_USER || mysqlEnv.VECTORIZER_MYSQL_USER || mysqlEnv.MYSQL_USER || "");
-  const mysqlPassword = trimQuotes(env.MYSQL_PASSWORD || mysqlEnv.VECTORIZER_MYSQL_PASSWORD || mysqlEnv.MYSQL_PASSWORD || "");
+  const vectorEnabled = false;
 
   if (!uploadUrl) {
     throw new Error("unable to resolve AI assistant upload URL");
@@ -807,30 +792,9 @@ async function main() {
   console.log(`Upload endpoint: ${uploadUrl}`);
   console.log(`Status endpoint: ${statusUrl}`);
   console.log(`Cancel endpoint: ${cancelSummaryUrl}`);
-  console.log(`Vectorization: ${vectorEnabled ? "enabled" : "disabled"}`);
-  if (vectorEnabled) {
-    console.log(`Ollama: ${ollamaUrl} model=${ollamaModel}`);
-  }
+  console.log("Vectorization: removed");
   console.log(`Found ${discovered.length} supported files, processing ${selected.length}.`);
-
-  if (vectorEnabled && (!mysqlDatabase || !mysqlUser || !mysqlPassword)) {
-    throw new Error("vectorization enabled but MySQL config is missing (MYSQL_DATABASE, MYSQL_USER, MYSQL_PASSWORD)");
-  }
-
-  let vectorConnection = null;
   try {
-    if (vectorEnabled) {
-      vectorConnection = await mysql.createConnection({
-        host: mysqlHost,
-        port: mysqlPort,
-        user: mysqlUser,
-        password: mysqlPassword,
-        database: mysqlDatabase,
-        charset: "utf8mb4",
-      });
-      await ensureVectorChunkTable(vectorConnection);
-    }
-
     let successCount = 0;
     let failedCount = 0;
     let stopRequested = false;
@@ -908,29 +872,8 @@ async function main() {
         console.log(`Completed ${display} (status=${finalStatus || "unknown"})`);
         console.log(`Summary ${display}: ${finalSummary || "(no summary)"}`);
 
-        if (vectorEnabled) {
-          if (!canVectorize) {
-            console.log(`Vectorization skipped for ${display}: missing file_id or record deleted.`);
-          } else {
-            const vectorized = await vectorizeUploadedFile({
-              connection: vectorConnection,
-              fileBaseUrl,
-              statusAuth,
-              owner,
-              fileId: uploaded.fileId,
-              s3Key: uploaded.key,
-              filename: finalFilename || display,
-              contentType: finalContentType || inferMimeType(display),
-              summary: finalSummary || uploaded.summary || "",
-              model: ollamaModel,
-              ollamaUrl,
-              largeFileBytes,
-              chunkBytes,
-            });
-            console.log(
-              `Vectorized ${display}: chunks=${vectorized.chunkCount}, embedded=${vectorized.embedded}, skipped=${vectorized.skipped}.`,
-            );
-          }
+        if (!canVectorize) {
+          console.log(`Post-upload note for ${display}: missing file_id or record deleted.`);
         }
 
         successCount += 1;
@@ -946,9 +889,6 @@ async function main() {
     console.log(`\nDone. Successfully processed ${successCount}/${selected.length}. Failed ${failedCount}.`);
     process.exit(failedCount > 0 ? 1 : 0);
   } finally {
-    if (vectorConnection) {
-      await vectorConnection.end();
-    }
   }
 }
 

@@ -9,14 +9,6 @@ SHARED_DOCKER_NETWORK="${SHARED_DOCKER_NETWORK:-ai-assistant-network}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${ENV_FILE:-$ROOT_DIR/.env}"
 ENV_EXAMPLE_FILE="$ROOT_DIR/.env.example"
-EMBEDDINGS_SCHEMA_SQL="$ROOT_DIR/sql/ensure_embeddings_schema.sql"
-
-sql_escape() {
-  local value="${1:-}"
-  value="${value//\\/\\\\}"
-  value="${value//\'/\'\'}"
-  printf "%s" "$value"
-}
 
 sync_monorepo() {
   if ! command -v git >/dev/null 2>&1; then
@@ -110,50 +102,6 @@ if [[ "$STATUS" != "healthy" ]]; then
 fi
 
 echo "MySQL is ready."
-
-if [[ -f "$EMBEDDINGS_SCHEMA_SQL" ]]; then
-  echo "Ensuring Sonja embeddings table exists..."
-  docker exec -i "${MYSQL_CONTAINER_NAME:-mysql-local}" mysql \
-    -uroot \
-    "-p${MYSQL_ROOT_PASSWORD}" \
-    "${MYSQL_DATABASE}" < "$EMBEDDINGS_SCHEMA_SQL"
-  echo "Embeddings schema ensured."
-fi
-
-VECTORIZER_MYSQL_USER="${VECTORIZER_MYSQL_USER:-sonja_vectorizer}"
-VECTORIZER_MYSQL_PASSWORD="${VECTORIZER_MYSQL_PASSWORD:-}"
-VECTORIZER_MYSQL_HOST="${VECTORIZER_MYSQL_HOST:-%}"
-
-if [[ -n "$VECTORIZER_MYSQL_USER" && -n "$VECTORIZER_MYSQL_PASSWORD" ]]; then
-  echo "Ensuring vectorizer MySQL user exists..."
-  SQL_USER="$(sql_escape "$VECTORIZER_MYSQL_USER")"
-  SQL_PASS="$(sql_escape "$VECTORIZER_MYSQL_PASSWORD")"
-  SQL_HOST="$(sql_escape "$VECTORIZER_MYSQL_HOST")"
-  SQL_DB="$(sql_escape "$MYSQL_DATABASE")"
-  docker exec -i "${MYSQL_CONTAINER_NAME:-mysql-local}" mysql \
-    -uroot \
-    "-p${MYSQL_ROOT_PASSWORD}" \
-    -e "CREATE USER IF NOT EXISTS '${SQL_USER}'@'${SQL_HOST}' IDENTIFIED BY '${SQL_PASS}';"
-  docker exec -i "${MYSQL_CONTAINER_NAME:-mysql-local}" mysql \
-    -uroot \
-    "-p${MYSQL_ROOT_PASSWORD}" \
-    -e "ALTER USER '${SQL_USER}'@'${SQL_HOST}' IDENTIFIED BY '${SQL_PASS}';"
-  docker exec -i "${MYSQL_CONTAINER_NAME:-mysql-local}" mysql \
-    -uroot \
-    "-p${MYSQL_ROOT_PASSWORD}" \
-    -e "GRANT SELECT, INSERT, UPDATE ON \`${SQL_DB}\`.\`sonja_file_embedding_chunks\` TO '${SQL_USER}'@'${SQL_HOST}';"
-  docker exec -i "${MYSQL_CONTAINER_NAME:-mysql-local}" mysql \
-    -uroot \
-    "-p${MYSQL_ROOT_PASSWORD}" \
-    -e "GRANT SELECT, INSERT, UPDATE ON \`${SQL_DB}\`.\`sonja_file_embeddings\` TO '${SQL_USER}'@'${SQL_HOST}';"
-  docker exec -i "${MYSQL_CONTAINER_NAME:-mysql-local}" mysql \
-    -uroot \
-    "-p${MYSQL_ROOT_PASSWORD}" \
-    -e "FLUSH PRIVILEGES;"
-  echo "Vectorizer user ensured: ${VECTORIZER_MYSQL_USER}@${VECTORIZER_MYSQL_HOST}"
-else
-  echo "Skipping vectorizer user setup (set VECTORIZER_MYSQL_USER and VECTORIZER_MYSQL_PASSWORD in .env)."
-fi
 
 echo "Host: ${MYSQL_HOST_BIND_IP:-127.0.0.1}"
 echo "Port: ${MYSQL_PORT:-3306}"

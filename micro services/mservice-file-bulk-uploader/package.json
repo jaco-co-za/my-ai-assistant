@@ -9,8 +9,5 @@
   "scripts": {
     "start": "node src/index.mjs",
     "build": "node -e \"console.log('mservice-file-bulk-uploader: no build step')\""
-  },
-  "dependencies": {
-    "mysql2": "^3.12.0"
   }
 }
