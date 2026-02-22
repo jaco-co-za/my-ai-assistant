@@ -513,13 +513,16 @@ async function backfillChunkMetadata(connection, owner) {
   let offset = 0;
   let updated = 0;
   while (true) {
-    const [rows] = await connection.execute(
+    const safePageSize = Math.max(1, Math.floor(pageSize));
+    const safeOffset = Math.max(0, Math.floor(offset));
+    const safeOwner = String(owner || "sonja");
+    const escapedOwner = safeOwner.replace(/\\/g, "\\\\").replace(/'/g, "''");
+    const [rows] = await connection.query(
       `SELECT id, summary, filename
        FROM sonja_file_embedding_chunks
-       WHERE owner = ?
+       WHERE owner = '${escapedOwner}'
        ORDER BY id ASC
-       LIMIT ? OFFSET ?`,
-      [owner, pageSize, offset],
+       LIMIT ${safePageSize} OFFSET ${safeOffset}`,
     );
     const list = Array.isArray(rows) ? rows : [];
     if (list.length === 0) {
