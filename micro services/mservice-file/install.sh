@@ -65,3 +65,9 @@ mkdir -p data
 "${COMPOSE[@]}" up -d --build
 
 echo "mservice-file is starting on http://localhost:3224"
+echo "Following logs for mservice-file (Ctrl+C to stop)..."
+if docker ps --format '{{.Names}}' | grep -qx 'ms-file'; then
+  docker logs -f ms-file
+else
+  "${COMPOSE[@]}" logs -f mservice-file
+fi
