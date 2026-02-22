@@ -998,6 +998,12 @@
           if (!showSendNoCacheButton && sendNoCacheButton) {
             sendNoCacheButton.style.display = "none";
           }
+          if (uploadFilesShortcut) {
+            uploadFilesShortcut.style.display = "none";
+          }
+          if (uploadPanel) {
+            uploadPanel.style.display = "none";
+          }
 
           function renderOpenAiToggles() {
             openAiApiToggle.classList.toggle("active", openAiApiEnabled);
@@ -3776,7 +3782,7 @@
           });
 
           uploadFilesShortcut.addEventListener("click", function () {
-            setUploadMode(!uploadModeEnabled || uploadOwner !== "me", "me");
+            pushEvent("shortcut", "File uploads disabled");
           });
 
           uploadBrowseButton.addEventListener("click", function () {

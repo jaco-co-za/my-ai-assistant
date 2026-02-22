@@ -76,11 +76,7 @@ function sanitizeMessageForLog(message: string): string {
 }
 
 function normalizeFileOwner(raw?: string): string {
-  const value = String(raw ?? "").trim().toLowerCase();
-  if (!value) {
-    return DEFAULT_FILE_OWNER;
-  }
-  return value.includes("sonja") ? "sonja" : DEFAULT_FILE_OWNER;
+  return DEFAULT_FILE_OWNER;
 }
 
 function isWhatsappInbound(from: string): boolean {

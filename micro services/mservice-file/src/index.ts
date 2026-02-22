@@ -255,11 +255,7 @@ function authMiddleware(req: Request, res: Response, next: NextFunction) {
 }
 
 function normalizeOwner(value: unknown): string {
-  const raw = String(value ?? '').trim().toLowerCase();
-  if (!raw) {
-    return DEFAULT_OWNER;
-  }
-  return raw.includes(SONJA_OWNER) ? SONJA_OWNER : DEFAULT_OWNER;
+  return DEFAULT_OWNER;
 }
 
 function stripSonjaPromptPrefix(prompt: string): string {

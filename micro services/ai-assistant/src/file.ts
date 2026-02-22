@@ -45,7 +45,7 @@ function normalizeWhatsappChatId(from: string): string {
 }
 
 function resolveQueryOwner(message: string): "me" | "sonja" {
-  return /\bsonja\b/i.test(message) ? "sonja" : "me";
+  return "me";
 }
 
 function normalizeAttachments(value: unknown): NonNullable<BrokerResult["attachments"]> | undefined {
