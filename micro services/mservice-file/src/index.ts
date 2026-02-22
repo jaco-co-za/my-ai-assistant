@@ -69,8 +69,6 @@ const SONJA_KEYWORD_MODEL = (process.env.SONJA_KEYWORD_MODEL || 'qwen2.5:7b').tr
 const SONJA_MATCH_MODEL = (process.env.SONJA_MATCH_MODEL || 'qwen2.5:7b').trim();
 const SONJA_MATCH_CONFIDENCE = Number.parseInt(process.env.SONJA_MATCH_CONFIDENCE || '75', 10);
 const SONJA_SEARCH_BATCH_SIZE = Math.max(1, Number.parseInt(process.env.SONJA_SEARCH_BATCH_SIZE || '5', 10));
-const SONJA_SEARCH_TARGET_MATCHES = Math.max(1, Number.parseInt(process.env.SONJA_SEARCH_TARGET_MATCHES || '3', 10));
-const SONJA_SEARCH_MAX_MATCHES = Math.max(SONJA_SEARCH_TARGET_MATCHES, Number.parseInt(process.env.SONJA_SEARCH_MAX_MATCHES || '5', 10));
 const SONJA_SEARCH_MAX_SCAN_ROWS = Math.max(SONJA_SEARCH_BATCH_SIZE, Number.parseInt(process.env.SONJA_SEARCH_MAX_SCAN_ROWS || '200', 10));
 const SONJA_EMBEDDING_SEARCH_ENABLED = String(process.env.SONJA_EMBEDDING_SEARCH_ENABLED || 'true').toLowerCase() !== 'false';
 const SONJA_EMBEDDING_OLLAMA_URL = (process.env.SONJA_EMBEDDING_OLLAMA_URL || process.env.OLLAMA_URL || 'http://192.168.55.73:11434')
@@ -1330,7 +1328,7 @@ async function runSonjaSummaryIterativeSearch(args: {
   let cursorId: number | null = null;
   const sqlParts: string[] = [];
 
-  while (scanned < SONJA_SEARCH_MAX_SCAN_ROWS && selected.size < SONJA_SEARCH_TARGET_MATCHES) {
+  while (scanned < SONJA_SEARCH_MAX_SCAN_ROWS) {
     const clauses: string[] = ["COALESCE(content_scope,'business') <> 'personal'", "TRIM(COALESCE(summary,'')) <> ''"];
     const params: unknown[] = [];
     if (cursorId !== null) {
@@ -1382,15 +1380,11 @@ async function runSonjaSummaryIterativeSearch(args: {
         continue;
       }
       selected.set(id, { row: { ...row, content_scope: 'business' }, score: scored.score, reason: scored.reason });
-      if (selected.size >= SONJA_SEARCH_MAX_MATCHES) {
-        break;
-      }
     }
   }
 
   const rows = Array.from(selected.values())
     .sort((a, b) => b.score - a.score)
-    .slice(0, SONJA_SEARCH_MAX_MATCHES)
     .map((item) => item.row);
   const debugSql = `/* sonja iterative summary search keywords=${JSON.stringify(keywords)} scanned=${scanned} selected=${rows.length} */ ${sqlParts.join(' ; ')}`;
   return { rows: await filterRowsForOwnerSearch({ owner: normalizedOwner, rows, dbCtx: args.dbCtx }), effectiveSql: debugSql };
