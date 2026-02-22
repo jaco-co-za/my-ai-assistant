@@ -13,14 +13,13 @@ const DEFAULT_MODEL = "qwen3-embedding";
 const DEFAULT_LARGE_FILE_BYTES = 1024 * 1024;
 const DEFAULT_CHUNK_BYTES = 250 * 1024;
 const DEFAULT_EMBED_MAX_INPUT_CHARS = 12000;
-const DEFAULT_ZERO_SHOT_ENABLED = false;
-const DEFAULT_ZERO_SHOT_MODEL = "Xenova/bart-large-mnli";
-const DEFAULT_ZERO_SHOT_SUBJECT_THRESHOLD = 0.55;
-const DEFAULT_ZERO_SHOT_GRADE_THRESHOLD = 0.72;
+const DEFAULT_CLASSIFIER_ENABLED = true;
+const DEFAULT_CLASSIFIER_MODEL = "qwen2.5:14b";
+const DEFAULT_CLASSIFIER_TIMEOUT_MS = 45000;
 const HTTP_TIMEOUT_MS = 120_000;
 
 function usage() {
-  console.log("Usage: node src/index.mjs [--limit N] [--dry-run] [--metadata-only] [--classify-zero-shot]");
+  console.log("Usage: node src/index.mjs [--limit N] [--dry-run] [--metadata-only]");
   console.log("");
   console.log("Env:");
   console.log("  FILE_SERVICE_URL       default http://192.168.55.113:3224");
@@ -31,10 +30,9 @@ function usage() {
   console.log("  LARGE_FILE_BYTES       default 1048576 (1MB)");
   console.log("  CHUNK_BYTES            default 256000 (250KB)");
   console.log("  EMBED_MAX_INPUT_CHARS  default 12000");
-  console.log("  ZERO_SHOT_CLASSIFY     default false");
-  console.log("  ZERO_SHOT_MODEL        default Xenova/bart-large-mnli");
-  console.log("  ZERO_SHOT_SUBJECT_THRESHOLD default 0.55");
-  console.log("  ZERO_SHOT_GRADE_THRESHOLD   default 0.72");
+  console.log("  CLASSIFIER_ENABLED     default true");
+  console.log("  CLASSIFIER_MODEL       default qwen2.5:14b");
+  console.log("  CLASSIFIER_TIMEOUT_MS  default 45000");
   console.log("  MYSQL_HOST             default 127.0.0.1");
   console.log("  MYSQL_PORT             default 3306");
   console.log("  MYSQL_DATABASE         required");
@@ -43,7 +41,7 @@ function usage() {
 }
 
 function parseArgs(argv) {
-  const out = { limit: 0, dryRun: false, metadataOnly: false, classifyZeroShot: false };
+  const out = { limit: 0, dryRun: false, metadataOnly: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = String(argv[i] || "").trim();
     if (arg === "--help" || arg === "-h") {
@@ -56,10 +54,6 @@ function parseArgs(argv) {
     }
     if (arg === "--metadata-only") {
       out.metadataOnly = true;
-      continue;
-    }
-    if (arg === "--classify-zero-shot") {
-      out.classifyZeroShot = true;
       continue;
     }
     if (arg === "--limit") {
@@ -85,11 +79,6 @@ function normalizeHeaderToken(value) {
 function toInt(value, fallback) {
   const parsed = Number.parseInt(String(value ?? ""), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function toFloat(value, fallback) {
-  const parsed = Number.parseFloat(String(value ?? ""));
-  return Number.isFinite(parsed) ? parsed : fallback;
 }
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = HTTP_TIMEOUT_MS) {
@@ -378,58 +367,6 @@ function parseEducational(summary, filename, grade, subject) {
   return 0;
 }
 
-const ZERO_SHOT_SUBJECT_LABELS = [
-  "mathematics",
-  "mathematical literacy",
-  "english",
-  "afrikaans",
-  "isiZulu",
-  "isiXhosa",
-  "Sepedi",
-  "Setswana",
-  "Sesotho",
-  "Xitsonga",
-  "Tshivenda",
-  "SiSwati",
-  "isiNdebele",
-  "natural sciences",
-  "life sciences",
-  "physical sciences",
-  "social sciences",
-  "history",
-  "geography",
-  "technology",
-  "robotics and coding",
-  "life orientation",
-  "creative arts",
-  "visual arts",
-  "dramatic arts",
-  "music",
-  "EMS",
-  "accounting",
-  "business studies",
-  "economics",
-  "tourism",
-  "consumer studies",
-  "agricultural sciences",
-  "CAT",
-  "information technology",
-  "religion studies",
-  "engineering graphics and design",
-  "civil technology",
-  "electrical technology",
-  "mechanical technology",
-  "other",
-];
-
-const ZERO_SHOT_GRADE_LABELS = [
-  "grade 1", "grade 2", "grade 3", "grade 4", "grade 5",
-  "grade 6", "grade 7", "grade 8", "grade 9", "grade 10",
-  "graad 1", "graad 2", "graad 3", "graad 4", "graad 5",
-  "graad 6", "graad 7", "graad 8", "graad 9", "graad 10",
-  "unknown grade",
-];
-
 function canonicalizeSubjectLabel(label) {
   const text = normalizeClassifierText(label);
   if (!text || text === "other") return "unknown";
@@ -491,108 +428,156 @@ function normalizeClassifierInput(summary, filename) {
   return parts.join("\n").trim();
 }
 
-function isZeroShotEnabled(value) {
+function isClassifierEnabled(value) {
   const raw = String(value ?? "").trim().toLowerCase();
-  if (!raw) return DEFAULT_ZERO_SHOT_ENABLED;
+  if (!raw) return DEFAULT_CLASSIFIER_ENABLED;
   return raw === "1" || raw === "true" || raw === "yes" || raw === "y";
 }
 
-async function createZeroShotContext(config) {
-  if (!config.zeroShotEnabled) {
-    return {
-      enabled: false,
-      classifySubject: async () => ({ subject: "unknown", score: 0 }),
-      classifyGrade: async () => ({ grade: null, score: 0 }),
-    };
-  }
-  let pipelineFn = null;
-  let classifier = null;
-  const subjectCache = new Map();
-  const gradeCache = new Map();
-
-  async function getClassifier() {
-    if (classifier) {
-      return classifier;
-    }
-    if (!pipelineFn) {
-      const transformers = await import("@xenova/transformers");
-      pipelineFn = transformers.pipeline;
-    }
-    classifier = await pipelineFn("zero-shot-classification", config.zeroShotModel);
-    return classifier;
-  }
-
-  async function runZeroShot(text, labels) {
-    const clf = await getClassifier();
-    const result = await clf(text, labels, { multi_label: false });
-    const topLabel = Array.isArray(result?.labels) ? String(result.labels[0] || "").trim().toLowerCase() : "";
-    const topScore = Array.isArray(result?.scores) ? Number(result.scores[0] || 0) : 0;
-    return { label: topLabel, score: Number.isFinite(topScore) ? topScore : 0 };
-  }
-
+function buildClassifierPromptPayload(summary, filename, allowedSubjects) {
   return {
-    enabled: true,
-    async classifySubject(summary, filename) {
-      const text = normalizeClassifierInput(summary, filename);
-      if (!text) {
-        return { subject: "unknown", score: 0 };
-      }
-      const cacheKey = text;
-      if (subjectCache.has(cacheKey)) {
-        return subjectCache.get(cacheKey);
-      }
-      const result = await runZeroShot(text, ZERO_SHOT_SUBJECT_LABELS);
-      const canonical = canonicalizeSubjectLabel(result.label);
-      const subject = result.score >= config.zeroShotSubjectThreshold ? canonical : "unknown";
-      const out = { subject, score: result.score };
-      subjectCache.set(cacheKey, out);
-      return out;
-    },
-    async classifyGrade(summary, filename) {
-      const text = normalizeClassifierInput(summary, filename);
-      if (!text) {
-        return { grade: null, score: 0 };
-      }
-      const cacheKey = text;
-      if (gradeCache.has(cacheKey)) {
-        return gradeCache.get(cacheKey);
-      }
-      const result = await runZeroShot(text, ZERO_SHOT_GRADE_LABELS);
-      let grade = null;
-      if (result.score >= config.zeroShotGradeThreshold) {
-        const match = result.label.match(/^(?:grade|graad)\s+(\d{1,2})$/);
-        if (match) {
-          const parsed = Number(match[1]);
-          if (isValidGrade(parsed)) {
-            grade = parsed;
-          }
-        }
-      }
-      const out = { grade, score: result.score };
-      gradeCache.set(cacheKey, out);
-      return out;
+    filename: String(filename || ""),
+    summary: String(summary || ""),
+    rules: {
+      grade_range: "1..10 only, else null",
+      subject_must_be_one_of: allowedSubjects,
+      educational_binary: "1=educational school content, 0=non-educational",
+      output_json_only: true,
     },
   };
 }
 
-async function classifyMetadata(summary, filename, zeroShotCtx) {
+async function classifyWithOllama(config, summary, filename, allowedSubjects) {
+  const payload = buildClassifierPromptPayload(summary, filename, allowedSubjects);
+  const response = await fetchWithTimeout(
+    `${config.ollamaUrl}/api/chat`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({
+        model: config.classifierModel,
+        stream: false,
+        format: "json",
+        options: { temperature: 0 },
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a strict file metadata classifier. Return ONLY JSON with keys: grade, subject, educational, confidence.",
+          },
+          { role: "user", content: JSON.stringify(payload) },
+        ],
+      }),
+    },
+    config.classifierTimeoutMs,
+  );
+  const raw = await response.text();
+  if (!response.ok) {
+    throw new Error(`classification call failed (${response.status}): ${raw}`);
+  }
+  let parsed = {};
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    parsed = {};
+  }
+  let content = "";
+  if (typeof parsed?.message?.content === "string") {
+    content = parsed.message.content;
+  } else if (typeof parsed?.response === "string") {
+    content = parsed.response;
+  } else if (typeof raw === "string") {
+    content = raw;
+  }
+  let json = {};
+  try {
+    json = JSON.parse(content);
+  } catch {
+    json = {};
+  }
+  const rawGrade = Number(json.grade);
+  const grade = isValidGrade(rawGrade) ? rawGrade : null;
+  const subject = canonicalizeSubjectLabel(json.subject);
+  const educational = Number(json.educational) === 1 ? 1 : Number(json.educational) === 0 ? 0 : null;
+  const confidence = Number.isFinite(Number(json.confidence)) ? Number(json.confidence) : 0;
+  return { grade, subject, educational, confidence };
+}
+
+async function createClassifierContext(config) {
+  if (!config.classifierEnabled) {
+    return {
+      enabled: false,
+      classifySubject: async () => ({ subject: "unknown", score: 0 }),
+      classifyGrade: async () => ({ grade: null, score: 0 }),
+      classifyAll: async () => ({ grade: null, subject: "unknown", educational: null, confidence: 0 }),
+    };
+  }
+  const cache = new Map();
+  const allowedSubjects = Array.from(new Set(SUBJECT_RULES.map((rule) => rule.key)));
+
+  return {
+    enabled: true,
+    async classifySubject(summary, filename) {
+      const key = normalizeClassifierInput(summary, filename);
+      if (!key) {
+        return { subject: "unknown", score: 0 };
+      }
+      if (!cache.has(key)) {
+        cache.set(key, await classifyWithOllama(config, summary, filename, allowedSubjects));
+      }
+      const hit = cache.get(key);
+      return { subject: hit.subject || "unknown", score: hit.confidence || 0 };
+    },
+    async classifyGrade(summary, filename) {
+      const key = normalizeClassifierInput(summary, filename);
+      if (!key) {
+        return { grade: null, score: 0 };
+      }
+      if (!cache.has(key)) {
+        cache.set(key, await classifyWithOllama(config, summary, filename, allowedSubjects));
+      }
+      const hit = cache.get(key);
+      return { grade: hit.grade, score: hit.confidence || 0 };
+    },
+    async classifyAll(summary, filename) {
+      const key = normalizeClassifierInput(summary, filename);
+      if (!key) {
+        return { grade: null, subject: "unknown", educational: null, confidence: 0 };
+      }
+      if (!cache.has(key)) {
+        cache.set(key, await classifyWithOllama(config, summary, filename, allowedSubjects));
+      }
+      return cache.get(key);
+    },
+  };
+}
+
+async function classifyMetadata(summary, filename, classifierCtx) {
   let grade = detectGrade(summary, filename);
   let subject = detectSubject(summary, filename);
-  if (zeroShotCtx?.enabled) {
+  let educational = parseEducational(summary, filename, grade, subject);
+  if (classifierCtx?.enabled) {
+    const predicted = await classifierCtx.classifyAll(summary, filename);
     if (subject === "unknown") {
-      const subjectPred = await zeroShotCtx.classifySubject(summary, filename);
+      const subjectPred = await classifierCtx.classifySubject(summary, filename);
       if (subjectPred.subject && subjectPred.subject !== "other") {
         subject = subjectPred.subject;
       }
     }
     if (grade === null) {
-      const gradePred = await zeroShotCtx.classifyGrade(summary, filename);
+      const gradePred = await classifierCtx.classifyGrade(summary, filename);
       if (gradePred.grade !== null) {
         grade = gradePred.grade;
       }
     }
+    if (predicted && (predicted.educational === 0 || predicted.educational === 1)) {
+      educational = predicted.educational;
+    } else {
+      educational = parseEducational(summary, filename, grade, subject);
+    }
+  } else {
+    educational = parseEducational(summary, filename, grade, subject);
   }
-  const educational = parseEducational(summary, filename, grade, subject);
   return { grade, subject, educational };
 }
 
@@ -632,15 +617,11 @@ async function resolveConfig() {
     process.env.EMBED_MAX_INPUT_CHARS || localEnv.EMBED_MAX_INPUT_CHARS,
     DEFAULT_EMBED_MAX_INPUT_CHARS,
   );
-  const zeroShotEnabled = isZeroShotEnabled(process.env.ZERO_SHOT_CLASSIFY ?? localEnv.ZERO_SHOT_CLASSIFY);
-  const zeroShotModel = String(process.env.ZERO_SHOT_MODEL || localEnv.ZERO_SHOT_MODEL || DEFAULT_ZERO_SHOT_MODEL).trim();
-  const zeroShotSubjectThreshold = toFloat(
-    process.env.ZERO_SHOT_SUBJECT_THRESHOLD || localEnv.ZERO_SHOT_SUBJECT_THRESHOLD,
-    DEFAULT_ZERO_SHOT_SUBJECT_THRESHOLD,
-  );
-  const zeroShotGradeThreshold = toFloat(
-    process.env.ZERO_SHOT_GRADE_THRESHOLD || localEnv.ZERO_SHOT_GRADE_THRESHOLD,
-    DEFAULT_ZERO_SHOT_GRADE_THRESHOLD,
+  const classifierEnabled = isClassifierEnabled(process.env.CLASSIFIER_ENABLED ?? localEnv.CLASSIFIER_ENABLED);
+  const classifierModel = String(process.env.CLASSIFIER_MODEL || localEnv.CLASSIFIER_MODEL || DEFAULT_CLASSIFIER_MODEL).trim();
+  const classifierTimeoutMs = toInt(
+    process.env.CLASSIFIER_TIMEOUT_MS || localEnv.CLASSIFIER_TIMEOUT_MS,
+    DEFAULT_CLASSIFIER_TIMEOUT_MS,
   );
 
   const mysqlHostRaw = String(
@@ -672,10 +653,9 @@ async function resolveConfig() {
     largeFileBytes,
     chunkBytes,
     embedMaxInputChars,
-    zeroShotEnabled,
-    zeroShotModel,
-    zeroShotSubjectThreshold,
-    zeroShotGradeThreshold,
+    classifierEnabled,
+    classifierModel,
+    classifierTimeoutMs,
     mysqlHost,
     mysqlPort,
     mysqlDatabase,
@@ -904,7 +884,7 @@ async function deleteStaleChunks(connection, owner, fileId, embeddingModel, chun
   );
 }
 
-async function backfillChunkMetadata(connection, owner, zeroShotCtx) {
+async function backfillChunkMetadata(connection, owner, classifierCtx) {
   const pageSize = 1000;
   let offset = 0;
   let updated = 0;
@@ -931,7 +911,7 @@ async function backfillChunkMetadata(connection, owner, zeroShotCtx) {
       }
       const summary = String(row.summary || "");
       const filename = String(row.filename || "");
-      const classified = await classifyMetadata(summary, filename, zeroShotCtx);
+      const classified = await classifyMetadata(summary, filename, classifierCtx);
       await connection.execute(
         `UPDATE sonja_file_embedding_chunks
          SET grade = ?, subject = ?, educational = ?, updated_at = CURRENT_TIMESTAMP
@@ -948,19 +928,14 @@ async function backfillChunkMetadata(connection, owner, zeroShotCtx) {
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const config = await resolveConfig();
-  if (options.classifyZeroShot) {
-    config.zeroShotEnabled = true;
-  }
   console.log(`File service: ${config.fileServiceUrl}`);
   console.log(`Ollama: ${config.ollamaUrl} model=${config.model}`);
   console.log(`Owner: ${config.owner}`);
   console.log(`Chunk rule: >${config.largeFileBytes} bytes -> ${config.chunkBytes} byte chunks`);
   console.log(`Embed max input chars: ${config.embedMaxInputChars}`);
-  console.log(`Zero-shot classify: ${config.zeroShotEnabled ? "enabled" : "disabled"}`);
-  if (config.zeroShotEnabled) {
-    console.log(
-      `Zero-shot model: ${config.zeroShotModel} (subject>=${config.zeroShotSubjectThreshold}, grade>=${config.zeroShotGradeThreshold})`,
-    );
+  console.log(`Metadata classifier: ${config.classifierEnabled ? "enabled" : "disabled"}`);
+  if (config.classifierEnabled) {
+    console.log(`Classifier model: ${config.classifierModel} timeout=${config.classifierTimeoutMs}ms`);
   }
 
   const files = await listSonjaFiles(config);
@@ -978,10 +953,10 @@ async function main() {
 
   try {
     await ensureChunkTable(connection);
-    const zeroShotCtx = await createZeroShotContext(config);
+    const classifierCtx = await createClassifierContext(config);
     if (options.metadataOnly) {
       console.log("Running metadata-only reclassification...");
-      const updated = await backfillChunkMetadata(connection, config.owner, zeroShotCtx);
+      const updated = await backfillChunkMetadata(connection, config.owner, classifierCtx);
       console.log(`Done. Reclassified rows=${updated}.`);
       return;
     }
@@ -999,7 +974,7 @@ async function main() {
       const summary = String(file.summary || "");
       const s3Key = file.s3_key ? String(file.s3_key) : null;
       const baseContentType = String(file.content_type || "application/octet-stream");
-      const classified = await classifyMetadata(summary, filename, zeroShotCtx);
+      const classified = await classifyMetadata(summary, filename, classifierCtx);
 
       console.log(`[${i + 1}/${selected.length}] ${filename} (id=${fileId})`);
       const downloaded = await downloadFile(config, fileId);
