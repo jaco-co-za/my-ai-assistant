@@ -1317,6 +1317,10 @@ async function runSonjaSummaryIterativeSearch(args: {
   const gradeConstraints = plan.grades;
   const subjectConstraints = plan.subjects;
   const languageConstraints = plan.languages;
+  // eslint-disable-next-line no-console
+  console.log(
+    `[sonja-search] extracted keywords=${JSON.stringify(keywords)} grades=${JSON.stringify(gradeConstraints)} subjects=${JSON.stringify(subjectConstraints)} languages=${JSON.stringify(languageConstraints)}`,
+  );
   const selected = new Map<number, { row: any; score: number; reason: string }>();
   let scanned = 0;
   let cursorId: number | null = null;
@@ -1347,6 +1351,17 @@ async function runSonjaSummaryIterativeSearch(args: {
       `FROM files WHERE ${clauses.join(' AND ')} ORDER BY id DESC LIMIT ?`;
     const batch = await args.dbCtx.dbAll(sql, ...params);
     sqlParts.push(sql);
+    // eslint-disable-next-line no-console
+    console.log(
+      `[sonja-search] sqlite batch size=${Array.isArray(batch) ? batch.length : 0} cursor=${cursorId ?? 'none'} keywords=${JSON.stringify(keywords)}`,
+    );
+    if (Array.isArray(batch) && batch.length > 0) {
+      const matchedList = batch
+        .map((row) => `${Number(row?.id || 0)}:${String(row?.filename || '').trim() || '(unnamed)'}`)
+        .join(' | ');
+      // eslint-disable-next-line no-console
+      console.log(`[sonja-search] sqlite batch matches ${matchedList}`);
+    }
     if (!Array.isArray(batch) || batch.length === 0) {
       break;
     }
