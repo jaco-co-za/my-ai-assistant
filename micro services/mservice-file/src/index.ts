@@ -1701,6 +1701,21 @@ async function runFileSearchQuery(args: {
   sourceChannel: string;
   sourceFrom: string;
 }): Promise<{ rows: any[]; effectiveSql: string; delivery: 'attach' | 'none' }> {
+  const isSonjaOwner = normalizeOwner(args.owner) === SONJA_OWNER;
+  const dateConstraint = extractDateConstraintFromPrompt(args.prompt);
+  if (isSonjaOwner) {
+    const summaryQuery = buildSummaryFallbackQuery(args.prompt, dateConstraint);
+    let rows = summaryQuery ? await args.dbCtx.dbAll(summaryQuery.sql, ...summaryQuery.params) : [];
+    rows = await filterRowsForOwnerSearch({ owner: args.owner, rows, dbCtx: args.dbCtx });
+    rows = applyPromptTokenRelevanceFilter(rows, args.prompt);
+    const emptySql =
+      'SELECT id, bucket, s3_key, filename, content_type, size_bytes, caption, summary, content_scope, summary_status, created_at ' +
+      'FROM files WHERE 1=0';
+    const effectiveSql = `${summaryQuery?.sql || emptySql} /* sonja summary-like search only */`;
+    const delivery = wantsFileDelivery(args.prompt) ? 'attach' : 'none';
+    return { rows, effectiveSql, delivery };
+  }
+
   const planPayload = {
     prompt: args.prompt,
     owner: args.owner,
@@ -1709,14 +1724,12 @@ async function runFileSearchQuery(args: {
   };
   const rawPlan = FILE_QUERY_USE_ASSISTANT ? await sendSqlPlanRequestToAssistant(planPayload) : null;
   const parsedPlan = rawPlan ? parseFileSqlPlan(rawPlan) : null;
-  const isSonjaOwner = normalizeOwner(args.owner) === SONJA_OWNER;
   const strictSonjaAssistant = isSonjaOwner && SONJA_STRICT_LLM_COMPLETION;
   if (strictSonjaAssistant && FILE_QUERY_USE_ASSISTANT && (!rawPlan || !parsedPlan || !parsedPlan.sql)) {
     throw new Error('assistant plan was incomplete; refusing fallback for strict sonja query');
   }
   const fallbackSql =
     `SELECT id, bucket, s3_key, filename, content_type, size_bytes, caption, summary, content_scope, summary_status, created_at FROM files ORDER BY id DESC LIMIT ${FILE_SQL_MAX_ROWS}`;
-  const dateConstraint = extractDateConstraintFromPrompt(args.prompt);
   const summaryFirstQuery = buildSummaryFallbackQuery(args.prompt, dateConstraint);
   let rows = summaryFirstQuery ? await args.dbCtx.dbAll(summaryFirstQuery.sql, ...summaryFirstQuery.params) : [];
   rows = await filterRowsForOwnerSearch({ owner: args.owner, rows, dbCtx: args.dbCtx });
@@ -2879,15 +2892,18 @@ app.post('/llm-query', authMiddleware, async (req, res) => {
       sourceChannel,
       sourceFrom,
     });
-    const refinement = await refineSonjaSearchResults({
-      originalPrompt: prompt,
-      owner,
-      dbCtx,
-      sourceChannel,
-      sourceFrom,
-      initialRows: initialQuery.rows,
-      initialSql: initialQuery.effectiveSql,
-    });
+    const isSonjaOwner = normalizeOwner(owner) === SONJA_OWNER;
+    const refinement = isSonjaOwner
+      ? { rows: initialQuery.rows, effectiveSql: initialQuery.effectiveSql, confidence: 0, iterations: 0 }
+      : await refineSonjaSearchResults({
+        originalPrompt: prompt,
+        owner,
+        dbCtx,
+        sourceChannel,
+        sourceFrom,
+        initialRows: initialQuery.rows,
+        initialSql: initialQuery.effectiveSql,
+      });
     let rows = refinement.rows;
     if (normalizeOwner(owner) === SONJA_OWNER) {
       rows = applyPromptTokenRelevanceFilter(rows, prompt);
@@ -2977,12 +2993,7 @@ app.post('/llm-query', authMiddleware, async (req, res) => {
       delivery,
       refinement:
         normalizeOwner(owner) === SONJA_OWNER
-          ? {
-            enabled: true,
-            iterations: refinement.iterations,
-            confidence: refinement.confidence,
-            threshold: SONJA_REFINEMENT_CONFIDENCE_THRESHOLD,
-          }
+          ? { enabled: false }
           : { enabled: false },
     });
   } catch (err: any) {
