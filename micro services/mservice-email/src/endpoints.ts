@@ -313,10 +313,14 @@ export function registerEndpoints({
         responsePayload.message = message;
       }
       return res.json(responsePayload);
-    } catch (err) {
+    } catch (err: any) {
       // eslint-disable-next-line no-console
       console.error('LLM query failed:', err);
-      return res.status(500).json({ success: false, confirm: false, message: 'Internal server error' });
+      const detail =
+        typeof err?.message === 'string' && err.message.trim().length > 0
+          ? err.message.trim()
+          : 'Internal server error';
+      return res.status(500).json({ success: false, confirm: false, message: detail });
     }
   });
 

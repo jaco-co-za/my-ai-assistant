@@ -1834,10 +1834,19 @@
             if (!canRead) {
               return false;
             }
-            if (card.detailsLoaded) {
-              return false;
+            const hasBody =
+              (typeof card.body === "string" && card.body.trim().length > 0) ||
+              (typeof card.viewerHtml === "string" && card.viewerHtml.trim().length > 0);
+            const hasSummary =
+              (typeof card.summary === "string" && card.summary.trim().length > 0) ||
+              Boolean(card.summaryAvailable);
+            if (!card.detailsLoaded) {
+              return true;
             }
-            return true;
+            if (!hasBody || !hasSummary) {
+              return true;
+            }
+            return false;
           }
 
           function renderEmailViewerQueueNav() {
@@ -2495,6 +2504,27 @@
               resetEmailViewer();
               return;
             }
+            if (
+              shouldFetchEmailViewerDetails(card) &&
+              !pendingEmailViewerDetailsRequest &&
+              !pendingEmailViewerSummaryRequest &&
+              socket &&
+              socket.readyState === WebSocket.OPEN
+            ) {
+              setEmailViewerBusy(true, "Loading email...");
+              pendingEmailViewerDetailsRequest = {
+                emailId: card.id,
+                readCommand: card.readCommand,
+                attempts: 1,
+              };
+              socket.send(
+                JSON.stringify({
+                  type: "message",
+                  message: card.readCommand,
+                  requestId: `evr-${Math.random().toString(36).slice(2)}`,
+                }),
+              );
+            }
             const metaLines = [];
             metaLines.push("ID: " + card.id);
             if (card.from) metaLines.push("From: " + card.from);
@@ -2642,26 +2672,6 @@
               statusLine.textContent = statusMessage;
               emailSummaryValue.appendChild(statusLine);
             }
-            const actions = document.createElement("div");
-            actions.className = "email-summary-actions";
-            const generateButton = document.createElement("button");
-            generateButton.type = "button";
-            generateButton.className = "attachment-id-tag email-summary-generate-button";
-            const pendingForCurrent =
-              pendingEmailViewerSummaryRequest &&
-              String(pendingEmailViewerSummaryRequest.emailId || "") === String(card.id || "");
-            generateButton.disabled = Boolean(pendingForCurrent);
-            generateButton.textContent = pendingForCurrent
-              ? "Generating..."
-              : hasAiSummary
-                ? "Regenerate AI Summary"
-                : "Generate AI Summary";
-            generateButton.addEventListener("click", function () {
-              requestEmailViewerSummaryGeneration(card);
-              renderCurrentEmailViewerEntry();
-            });
-            actions.appendChild(generateButton);
-            emailSummaryValue.appendChild(actions);
             emailSummaryValue.classList.remove("email-viewer-empty");
             renderEmailViewerQueueNav();
             setActiveViewerTab("email");

@@ -318,6 +318,42 @@ export function createEmailSync({
     }
   }
 
+  function normalizeAssistantUrl(rawUrl: string): string {
+    const trimmed = String(rawUrl || '').trim();
+    if (!trimmed) {
+      return '';
+    }
+    return trimmed.match(/^https?:\/\//i) ? trimmed : `http://${trimmed}`;
+  }
+
+  function buildAssistantUrlCandidates(rawUrl: string): string[] {
+    const primary = normalizeAssistantUrl(rawUrl);
+    if (!primary) {
+      return [];
+    }
+    const urls = [primary];
+    try {
+      const parsed = new URL(primary);
+      const host = parsed.hostname.toLowerCase();
+      if (host === 'localhost' || host === '127.0.0.1') {
+        const basePath = parsed.pathname || '/receive-msg';
+        const withServiceHost = new URL(primary);
+        withServiceHost.hostname = 'ai-assistant';
+        urls.push(withServiceHost.toString());
+        const withHostGateway = new URL(primary);
+        withHostGateway.hostname = 'host.docker.internal';
+        urls.push(withHostGateway.toString());
+        if (!basePath || basePath === '/') {
+          withServiceHost.pathname = '/receive-msg';
+          withHostGateway.pathname = '/receive-msg';
+        }
+      }
+    } catch {
+      // Keep primary only when URL parsing fails.
+    }
+    return Array.from(new Set(urls));
+  }
+
   async function sendSummaryRequestToAssistant(payload: Record<string, unknown>): Promise<string | null> {
     const rawUrl = (process.env.ASSISTANT_URL || '').trim();
     if (!rawUrl) {
@@ -325,66 +361,71 @@ export function createEmailSync({
     }
     const token = (process.env.ASSISTANT_AUTH ?? process.env.AUTH ?? '').trim().replace(/^Bearer\s+/i, '');
     const authorizationHeader = token ? `Bearer ${token}` : '';
-    const url = rawUrl.match(/^https?:\/\//i) ? rawUrl : `http://${rawUrl}`;
-    const controller = new AbortController();
-    const timeoutMs = Number.isFinite(SUMMARY_TIMEOUT_MS) && SUMMARY_TIMEOUT_MS > 0 ? SUMMARY_TIMEOUT_MS : 60000;
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const messagePayload = {
-        Authorization: token,
-        authorization: token,
-        model: SUMMARY_MODEL,
-        messages: [
-          {
-            role: 'system',
-            content: 'You summarize emails. Return ONLY valid JSON: {"ai_summary":"..."}',
-          },
-          {
-            role: 'user',
-            content: [
-              'Create a concise email summary from the payload.',
-              'Do not include labels (no "AI Summary:", no metadata keys).',
-              'If body is empty, use subject and sender only.',
-              `Payload: ${JSON.stringify(payload)}`,
-            ].join('\n'),
-          },
-        ],
-        temperature: 0.2,
-        stream: false,
-        format: 'json',
-      };
-      const requestBody = {
-        from: 'custom-prompt',
-        message: JSON.stringify(messagePayload),
-      };
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          Accept: 'application/json',
-          'Content-Type': 'application/json',
-          ...(authorizationHeader ? { Authorization: authorizationHeader } : {}),
+    const candidateUrls = buildAssistantUrlCandidates(rawUrl);
+    if (candidateUrls.length === 0) {
+      return null;
+    }
+    const messagePayload = {
+      Authorization: token,
+      authorization: token,
+      model: SUMMARY_MODEL,
+      messages: [
+        {
+          role: 'system',
+          content: 'You summarize emails. Return ONLY valid JSON: {"ai_summary":"..."}',
         },
-        body: JSON.stringify(requestBody),
-        signal: controller.signal,
-      });
-      const raw = await response.text();
-      if (!response.ok) {
+        {
+          role: 'user',
+          content: [
+            'Create a concise email summary from the payload.',
+            'Do not include labels (no "AI Summary:", no metadata keys).',
+            'If body is empty, use subject and sender only.',
+            `Payload: ${JSON.stringify(payload)}`,
+          ].join('\n'),
+        },
+      ],
+      temperature: 0.2,
+      stream: false,
+      format: 'json',
+    };
+    const requestBody = {
+      from: 'custom-prompt',
+      message: JSON.stringify(messagePayload),
+    };
+    const timeoutMs = Number.isFinite(SUMMARY_TIMEOUT_MS) && SUMMARY_TIMEOUT_MS > 0 ? SUMMARY_TIMEOUT_MS : 60000;
+    for (const url of candidateUrls) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+            ...(authorizationHeader ? { Authorization: authorizationHeader } : {}),
+          },
+          body: JSON.stringify(requestBody),
+          signal: controller.signal,
+        });
+        const raw = await response.text();
+        if (!response.ok) {
+          if (debug) {
+            // eslint-disable-next-line no-console
+            console.warn(`[summary] assistant returned ${response.status} via ${url}`);
+          }
+          continue;
+        }
+        return raw;
+      } catch (err: any) {
         if (debug) {
           // eslint-disable-next-line no-console
-          console.warn(`[summary] assistant returned ${response.status}`);
+          console.warn(`[summary] assistant request failed via ${url}: ${err?.message || 'request failed'}`);
         }
-        return null;
+      } finally {
+        clearTimeout(timer);
       }
-      return raw;
-    } catch (err: any) {
-      if (debug) {
-        // eslint-disable-next-line no-console
-        console.warn('[summary] assistant request failed', err?.message || 'request failed');
-      }
-      return null;
-    } finally {
-      clearTimeout(timer);
     }
+    return null;
   }
 
   async function saveEmailSummary(emailId: number, summary: string, rawResponse: string): Promise<void> {
@@ -717,7 +758,20 @@ export function createEmailSync({
     }
 
     const allowSummary = options?.allowSummary !== false;
-    if (allowSummary && isNewEmail) {
+    let shouldGenerateSummary = false;
+    if (allowSummary) {
+      if (isNewEmail) {
+        shouldGenerateSummary = true;
+      } else {
+        const existingSummaryRow = await dbGet(
+          'SELECT summary FROM email_llm_summaries WHERE email_id = ? LIMIT 1;',
+          row.id,
+        );
+        const existingSummary = cleanSummaryText(existingSummaryRow?.summary);
+        shouldGenerateSummary = existingSummary.length === 0;
+      }
+    }
+    if (shouldGenerateSummary) {
       try {
         await maybeGenerateSummaryForNewEmail({
           emailId: Number(row.id),

@@ -489,6 +489,13 @@ export function registerEndpoints(
         ? `${baseLabel} summary failed: ${errorDetail}`
         : `${baseLabel} summary failed.`;
       broadcastEvent("file-upload", detail);
+    } else if (summaryStatus === "completed") {
+      const detail = summary
+        ? `${baseLabel} summary ready: ${summary}`
+        : `${baseLabel} summary ready.`;
+      broadcastEvent("file-upload", detail);
+    } else if (summaryStatus === "pending") {
+      broadcastEvent("file-upload", `${baseLabel} summary pending...`);
     }
     res.status(200).json({ success: true });
   });
