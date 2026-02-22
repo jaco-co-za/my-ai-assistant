@@ -300,7 +300,7 @@ export async function handleHomeAssistant(
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       console.warn(`[homeassistant] cron request failed: ${msg}`);
-      return { success: false, code: 503, msg: "Home assistant service is unavailable", uuid };
+      return { success: false, code: 503, msg: `Home assistant service is unavailable: ${msg}`, uuid };
     }
   }
 
@@ -363,7 +363,7 @@ export async function handleHomeAssistant(
     } catch (error) {
       const msg = error instanceof Error ? error.message : "unknown error";
       console.warn(`[homeassistant] temporary action failed: ${msg}`);
-      return { success: false, code: 503, msg: "Home assistant service is unavailable", uuid };
+      return { success: false, code: 503, msg: `Home assistant service is unavailable: ${msg}`, uuid };
     }
   }
 
@@ -442,6 +442,6 @@ export async function handleHomeAssistant(
   } catch (error) {
     const msg = error instanceof Error ? error.message : "unknown error";
     console.warn(`[homeassistant] request failed: ${msg}`);
-    return { success: false, code: 503, msg: "Home assistant service is unavailable", uuid };
+    return { success: false, code: 503, msg: `Home assistant service is unavailable: ${msg}`, uuid };
   }
 }

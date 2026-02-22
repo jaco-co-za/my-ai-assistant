@@ -271,6 +271,57 @@ function isWaterUsageReadIntent(prompt: string): boolean {
   return hasUsage || hasReadVerb;
 }
 
+function isWeatherReadIntent(prompt: string): boolean {
+  const text = prompt.toLowerCase();
+  const hasWeatherSignal =
+    text.includes("weather") ||
+    text.includes("openweather") ||
+    text.includes("temperature") ||
+    text.includes("humidity") ||
+    text.includes("wind") ||
+    text.includes("forecast");
+  if (!hasWeatherSignal) {
+    return false;
+  }
+  const dateTimeOnly =
+    /\b(date|time|day|weekday|month|year|clock)\b/.test(text) &&
+    !/\b(weather|openweather|temperature|humidity|wind|forecast)\b/.test(text);
+  return !dateTimeOnly;
+}
+
+function selectWeatherEntity(entities: HaEntity[], prompt: string): HaEntity | null {
+  const sensors = entities.filter((e) => e.entity_id.toLowerCase().startsWith("sensor."));
+  if (sensors.length === 0) {
+    return null;
+  }
+  const text = prompt.toLowerCase();
+  const scoreEntity = (entity: HaEntity): number => {
+    const id = entity.entity_id.toLowerCase();
+    const name = (entity.friendly_name ?? "").toLowerCase();
+    let score = 0;
+    if (id.includes("openweather")) score += 120;
+    if (name.includes("openweather")) score += 100;
+    if (id.includes("weather")) score += 80;
+    if (name.includes("weather")) score += 70;
+    if (text.includes("temperature") && (id.includes("temperature") || name.includes("temperature"))) score += 60;
+    if (text.includes("humidity") && (id.includes("humidity") || name.includes("humidity"))) score += 60;
+    if (text.includes("wind") && (id.includes("wind") || name.includes("wind"))) score += 60;
+    if (text.includes("forecast") && (id.includes("forecast") || name.includes("forecast"))) score += 60;
+    if (id.includes("date") || id.includes("time")) score -= 40;
+    return score;
+  };
+  let best: HaEntity | null = null;
+  let bestScore = -1;
+  for (const sensor of sensors) {
+    const score = scoreEntity(sensor);
+    if (score > bestScore) {
+      best = sensor;
+      bestScore = score;
+    }
+  }
+  return bestScore > 0 ? best : null;
+}
+
 function findToolByName(tools: McpTool[], targetName: string): McpTool | null {
   const target = targetName.toLowerCase();
   for (const tool of tools) {
@@ -1264,6 +1315,7 @@ export async function entryPoint(payload: unknown): Promise<EntryResult | null> 
     const responseCacheEnabled = isResponseCacheEnabled() && !skipCacheForRequest;
     const cacheKey = normalizeCacheKey(requestPayload.prompt);
     const forceWaterUsageRead = isWaterUsageReadIntent(requestPayload.prompt);
+    const forceWeatherRead = isWeatherReadIntent(requestPayload.prompt);
     console.log(
       "[request] cache",
       JSON.stringify({ cacheEnabled, responseCacheEnabled, skipCacheForRequest, cacheKey })
@@ -1506,17 +1558,21 @@ export async function entryPoint(payload: unknown): Promise<EntryResult | null> 
       const forcedWaterEntity = forceWaterUsageRead
         ? selectWaterUsageEntity(fallbackEntities, requestPayload.prompt)
         : null;
-      const forcedStateTool = forceWaterUsageRead ? findToolByName(tools, "HassGetState") : null;
+      const forcedWeatherEntity = forceWeatherRead
+        ? selectWeatherEntity(fallbackEntities, requestPayload.prompt)
+        : null;
+      const forcedEntity = forcedWaterEntity ?? forcedWeatherEntity;
+      const forcedStateTool = (forceWaterUsageRead || forceWeatherRead) ? findToolByName(tools, "HassGetState") : null;
 
-      if (forceWaterUsageRead && forcedWaterEntity && forcedStateTool) {
+      if ((forceWaterUsageRead || forceWeatherRead) && forcedEntity && forcedStateTool) {
         const forcedArgs: Record<string, unknown> = {
-          entity_id: forcedWaterEntity.entity_id,
+          entity_id: forcedEntity.entity_id,
         };
         const forcedResult = await executeActionFromCall(
           forcedStateTool.name,
           forcedArgs,
           "forced:HassGetState",
-          "forced:water_usage_intent"
+          forceWaterUsageRead ? "forced:water_usage_intent" : "forced:weather_intent"
         );
         if (isActionSuccessful(forcedResult.actionResult)) {
           if (cacheEnabled) {
