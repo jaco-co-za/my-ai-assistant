@@ -1345,7 +1345,7 @@ async function runSonjaSummaryIterativeSearch(args: {
         params.push(tokenToLikePattern(keyword));
         params.push(`%${String(keyword || '').toLowerCase().replace(/[^a-z0-9]/g, '')}%`);
       }
-      clauses.push(`(${keywordClauses.join(' OR ')})`);
+      clauses.push(`(${keywordClauses.join(' AND ')})`);
     }
     if (args.dateConstraint) {
       clauses.push(`(${args.dateConstraint.clause})`);
