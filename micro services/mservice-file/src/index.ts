@@ -1336,8 +1336,14 @@ async function runSonjaSummaryIterativeSearch(args: {
     if (keywords.length > 0) {
       const keywordClauses: string[] = [];
       for (const keyword of keywords) {
-        keywordClauses.push('LOWER(COALESCE(summary,\'\')) LIKE ?');
+        keywordClauses.push(
+          '(' +
+            'LOWER(COALESCE(summary,\'\')) LIKE ? ' +
+            'OR REPLACE(REPLACE(REPLACE(LOWER(COALESCE(summary,\'\')), \' \', \'\'), \'-\', \'\'), \'_\', \'\') LIKE ?' +
+          ')',
+        );
         params.push(tokenToLikePattern(keyword));
+        params.push(`%${String(keyword || '').toLowerCase().replace(/[^a-z0-9]/g, '')}%`);
       }
       clauses.push(`(${keywordClauses.join(' OR ')})`);
     }
