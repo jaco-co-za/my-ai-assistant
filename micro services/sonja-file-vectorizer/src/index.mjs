@@ -508,6 +508,73 @@ async function upsertChunk(connection, row) {
   );
 }
 
+async function updateChunkMetadataOnly(connection, row) {
+  await connection.execute(
+    `UPDATE sonja_file_embedding_chunks
+     SET
+      chunk_count = ?,
+      chunk_size_bytes = ?,
+      s3_key = ?,
+      filename = ?,
+      content_type = ?,
+      summary = ?,
+      grade = ?,
+      subject = ?,
+      educational = ?,
+      content_hash = ?,
+      metadata_json = CAST(? AS JSON),
+      updated_at = CURRENT_TIMESTAMP
+     WHERE owner = ? AND file_id = ? AND chunk_index = ? AND embedding_model = ?`,
+    [
+      row.chunkCount,
+      row.chunkSizeBytes,
+      row.s3Key,
+      row.filename,
+      row.contentType,
+      row.summary,
+      row.grade,
+      row.subject,
+      row.educational,
+      row.contentHash,
+      JSON.stringify(row.metadata || {}),
+      row.owner,
+      row.fileId,
+      row.chunkIndex,
+      row.embeddingModel,
+    ],
+  );
+}
+
+async function loadExistingChunkIndex(connection, owner, fileId, embeddingModel) {
+  const [rows] = await connection.execute(
+    `SELECT chunk_index, content_hash
+     FROM sonja_file_embedding_chunks
+     WHERE owner = ? AND file_id = ? AND embedding_model = ?`,
+    [owner, fileId, embeddingModel],
+  );
+  const map = new Map();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const chunkIndex = Number(row.chunk_index);
+    const contentHash = String(row.content_hash || "").trim().toLowerCase();
+    if (!Number.isFinite(chunkIndex) || chunkIndex < 0) {
+      continue;
+    }
+    if (!contentHash) {
+      continue;
+    }
+    map.set(Math.floor(chunkIndex), contentHash);
+  }
+  return map;
+}
+
+async function deleteStaleChunks(connection, owner, fileId, embeddingModel, chunkCount) {
+  await connection.execute(
+    `DELETE FROM sonja_file_embedding_chunks
+     WHERE owner = ? AND file_id = ? AND embedding_model = ? AND chunk_index >= ?`,
+    [owner, fileId, embeddingModel, chunkCount],
+  );
+}
+
 async function backfillChunkMetadata(connection, owner) {
   const pageSize = 1000;
   let offset = 0;
@@ -582,6 +649,7 @@ async function main() {
     }
     let processedFiles = 0;
     let embeddedChunks = 0;
+    let skippedChunks = 0;
 
     for (let i = 0; i < selected.length; i += 1) {
       const file = selected[i] || {};
@@ -603,10 +671,42 @@ async function main() {
       const contentType = downloaded.contentType || baseContentType;
       const shouldChunk = payloadBuffer.length > config.largeFileBytes;
       const chunks = shouldChunk ? splitBuffer(payloadBuffer, config.chunkBytes) : [payloadBuffer];
+      const existingByChunk = await loadExistingChunkIndex(connection, config.owner, fileId, config.model);
 
       for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
         const chunk = chunks[chunkIndex];
         const contentHash = createHash("sha256").update(chunk).digest("hex");
+        const metadataPayload = {
+          owner: config.owner,
+          fileId,
+          chunkIndex,
+          chunkCount: chunks.length,
+          chunkSizeBytes: chunk.length,
+          s3Key,
+          filename,
+          contentType,
+          summary,
+          grade,
+          subject,
+          educational,
+          embeddingModel: config.model,
+          contentHash,
+          metadata: {
+            source: "sonja-file-vectorizer",
+            chunking_rule: {
+              large_file_bytes: config.largeFileBytes,
+              chunk_bytes: config.chunkBytes,
+            },
+          },
+        };
+        const existingHash = existingByChunk.get(chunkIndex);
+        if (existingHash && existingHash === contentHash.toLowerCase()) {
+          if (!options.dryRun) {
+            await updateChunkMetadataOnly(connection, metadataPayload);
+          }
+          skippedChunks += 1;
+          continue;
+        }
         const chunkText = [
           `owner=${config.owner}`,
           `file_id=${fileId}`,
@@ -623,40 +723,23 @@ async function main() {
         }
         if (!options.dryRun) {
           await upsertChunk(connection, {
-            owner: config.owner,
-            fileId,
-            chunkIndex,
-            chunkCount: chunks.length,
-            chunkSizeBytes: chunk.length,
-            s3Key,
-            filename,
-            contentType,
-            summary,
-            grade,
-            subject,
-            educational,
-            embeddingModel: config.model,
+            ...metadataPayload,
             embeddingDim: embedding.length,
             embedding,
-            contentHash,
-            metadata: {
-              source: "sonja-file-vectorizer",
-              chunking_rule: {
-                large_file_bytes: config.largeFileBytes,
-                chunk_bytes: config.chunkBytes,
-              },
-            },
           });
         }
         embeddedChunks += 1;
+      }
+      if (!options.dryRun) {
+        await deleteStaleChunks(connection, config.owner, fileId, config.model, chunks.length);
       }
       processedFiles += 1;
     }
 
     console.log(
       options.dryRun
-        ? `Dry run complete. Processed files=${processedFiles}, chunks embedded=${embeddedChunks}, db writes skipped.`
-        : `Done. Processed files=${processedFiles}, chunks embedded=${embeddedChunks}.`,
+        ? `Dry run complete. Processed files=${processedFiles}, chunks embedded=${embeddedChunks}, chunks skipped=${skippedChunks}, db writes skipped.`
+        : `Done. Processed files=${processedFiles}, chunks embedded=${embeddedChunks}, chunks skipped=${skippedChunks}.`,
     );
   } finally {
     await connection.end();
