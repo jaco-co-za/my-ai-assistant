@@ -1,0 +1,16 @@
+{
+  "name": "sonja-file-vectorizer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "sonja-file-vectorizer": "src/index.mjs"
+  },
+  "scripts": {
+    "start": "node src/index.mjs",
+    "build": "node -e \"console.log('sonja-file-vectorizer: no build step')\""
+  },
+  "dependencies": {
+    "mysql2": "^3.14.5"
+  }
+}
