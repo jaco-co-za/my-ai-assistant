@@ -270,6 +270,7 @@ export async function createChronicleEvent(input: ChronicleEventInput): Promise<
   if (!config) {
     return { ok: false, error: "Chronicle configuration missing (base url, api key, category, target)" };
   }
+  const chronicleConfig = config;
 
   const timezone = input.timezone || DEFAULT_TIMEZONE;
   const timing = input.cron
@@ -285,9 +286,9 @@ export async function createChronicleEvent(input: ChronicleEventInput): Promise<
   const payload = {
     title: input.summary || input.message || `cron-${input.refId}`,
     enabled: 1,
-    category: config.category,
-    target: config.target,
-    plugin: config.plugin,
+    category: chronicleConfig.category,
+    target: chronicleConfig.target,
+    plugin: chronicleConfig.plugin,
     timezone,
     timing,
     params: {
@@ -323,21 +324,77 @@ export async function createChronicleEvent(input: ChronicleEventInput): Promise<
     },
   };
 
-  const url = `${config.baseUrl}/api/app/create_event/v1`;
+  const url = `${chronicleConfig.baseUrl}/api/app/create_event/v1`;
   console.log(`[chronicle] create_event url=${url} refId=${input.refId}`);
   console.log(`[chronicle] create_event payload=${JSON.stringify(payload)}`);
 
-  try {
+  async function postCreateEvent(eventPayload: Record<string, unknown>) {
     const response = await fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-API-Key": config.apiKey,
+        "X-API-Key": chronicleConfig.apiKey,
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(eventPayload),
     });
     const data = (await response.json()) as { code?: number; id?: string; description?: string };
+    return { response, data };
+  }
+
+  async function lookupGeneralCategoryId(): Promise<string | null> {
+    const endpoints = ["/api/app/get_categories/v1", "/api/app/get_category_list/v1"];
+    for (const endpoint of endpoints) {
+      try {
+        const response = await fetch(`${chronicleConfig.baseUrl}${endpoint}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-API-Key": chronicleConfig.apiKey,
+          },
+          body: JSON.stringify({}),
+        });
+        const raw = (await response.json()) as {
+          code?: number;
+          rows?: Array<Record<string, unknown>>;
+          categories?: Array<Record<string, unknown>>;
+        };
+        if (!response.ok || raw.code !== 0) {
+          continue;
+        }
+        const rows = Array.isArray(raw.rows)
+          ? raw.rows
+          : Array.isArray(raw.categories)
+            ? raw.categories
+            : [];
+        const match = rows.find((row) => {
+          const name = String(row?.title ?? row?.name ?? row?.label ?? "").trim().toLowerCase();
+          return name === "general";
+        });
+        const id = String(match?.id ?? match?._id ?? "").trim();
+        if (id) {
+          return id;
+        }
+      } catch {
+        // Try next endpoint.
+      }
+    }
+    return null;
+  }
+
+  try {
+    let { response, data } = await postCreateEvent(payload as unknown as Record<string, unknown>);
     console.log(`[chronicle] create_event response=${JSON.stringify(data)}`);
+    if ((!response.ok || data.code !== 0 || !data.id) && /category not found/i.test(String(data?.description || ""))) {
+      const generalCategoryId = await lookupGeneralCategoryId();
+      if (generalCategoryId && generalCategoryId !== chronicleConfig.category) {
+        const retryPayload = { ...payload, category: generalCategoryId };
+        console.warn(
+          `[chronicle] category '${chronicleConfig.category}' not found, retrying with General category id='${generalCategoryId}'`,
+        );
+        ({ response, data } = await postCreateEvent(retryPayload as unknown as Record<string, unknown>));
+        console.log(`[chronicle] create_event retry response=${JSON.stringify(data)}`);
+      }
+    }
     if (!response.ok || data.code !== 0 || !data.id) {
       const error = data.description || `Chronicle error (status ${response.status})`;
       console.warn(`[chronicle] create_event failed: ${error}`);

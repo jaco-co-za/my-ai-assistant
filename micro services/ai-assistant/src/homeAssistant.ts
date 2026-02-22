@@ -6,7 +6,7 @@ import { createChronicleEvent } from "./chronicle.js";
 import { DateTime } from "luxon";
 import { handleSchedule } from "./schedule.js";
 
-const DEFAULT_HASS_URL = "http://192.168.55.73:3222/requests";
+const DEFAULT_HASS_URL = "http://ms-hass:3223/requests";
 const CONFIRM_TTL_MS = Number(process.env.CONFIRM_TTL_SEC ?? "") > 0
   ? Number(process.env.CONFIRM_TTL_SEC) * 1000
   : 120_000;
@@ -22,31 +22,60 @@ function resolveHassUrl(raw?: string): string {
   return `http://${value}`;
 }
 
+function buildHassUrlCandidates(raw?: string): string[] {
+  const primary = resolveHassUrl(raw);
+  const urls = [primary];
+  try {
+    const parsed = new URL(primary);
+    const host = parsed.hostname.toLowerCase();
+    if (host === "localhost" || host === "127.0.0.1") {
+      const serviceHost = new URL(primary);
+      serviceHost.hostname = "ms-hass";
+      urls.push(serviceHost.toString());
+      const gatewayHost = new URL(primary);
+      gatewayHost.hostname = "host.docker.internal";
+      urls.push(gatewayHost.toString());
+    }
+  } catch {
+    // keep primary only
+  }
+  return Array.from(new Set(urls));
+}
+
 async function postHomeAssistant(payload: Record<string, unknown>): Promise<string> {
-  const url = resolveHassUrl(process.env.HOME_ASSISTANT_MICRO_SERVICE_URL);
+  const urls = buildHassUrlCandidates(process.env.HOME_ASSISTANT_MICRO_SERVICE_URL);
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   const auth = (process.env.HASS_MICRO_AUTH || "").trim();
   if (auth) {
     headers.Authorization = auth;
   }
+  let lastError = "";
+  for (const url of urls) {
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(payload),
+      });
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(payload),
-  });
-
-  const text = await response.text();
-  if (!response.ok) {
-    const parsed = extractJsonObject(text);
-    const detail =
-      (parsed && typeof parsed.error === "string" && parsed.error.trim()) ||
-      (parsed && typeof parsed.message === "string" && parsed.message.trim()) ||
-      text.trim() ||
-      `HTTP ${response.status}`;
-    throw new Error(`Home assistant upstream error (${response.status}): ${detail}`);
+      const text = await response.text();
+      if (!response.ok) {
+        const parsed = extractJsonObject(text);
+        const detail =
+          (parsed && typeof parsed.error === "string" && parsed.error.trim()) ||
+          (parsed && typeof parsed.message === "string" && parsed.message.trim()) ||
+          text.trim() ||
+          `HTTP ${response.status}`;
+        lastError = `Home assistant upstream error (${response.status}) via ${url}: ${detail}`;
+        continue;
+      }
+      return text;
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "request failed";
+      lastError = `Home assistant endpoint unreachable at ${url}: ${msg}`;
+    }
   }
-  return text;
+  throw new Error(lastError || "Home assistant endpoint unreachable");
 }
 
 function createAppConfirmation(from: string, url: string, payload: Record<string, unknown>): void {
