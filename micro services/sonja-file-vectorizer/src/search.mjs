@@ -97,15 +97,28 @@ async function loadEnvFromFile(filePath) {
 async function resolveConfig() {
   const here = path.dirname(new URL(import.meta.url).pathname);
   const repoRoot = path.resolve(here, "..", "..", "..");
+  const localEnv = await loadEnvFromFile(path.resolve(here, "..", ".env"));
   const mysqlEnv = await loadEnvFromFile(path.resolve(repoRoot, "servers", "mysql-docker", ".env"));
+  const mysqlHostRaw = String(
+    process.env.MYSQL_HOST || localEnv.MYSQL_HOST || mysqlEnv.VECTORIZER_MYSQL_HOST || mysqlEnv.MYSQL_HOST || "127.0.0.1",
+  ).trim();
   return {
-    ollamaUrl: String(process.env.OLLAMA_URL || DEFAULT_OLLAMA_URL).replace(/\/+$/, ""),
-    model: String(process.env.OLLAMA_MODEL || DEFAULT_MODEL).trim() || DEFAULT_MODEL,
-    mysqlHost: String(process.env.MYSQL_HOST || mysqlEnv.VECTORIZER_MYSQL_HOST || mysqlEnv.MYSQL_HOST || "127.0.0.1").trim(),
-    mysqlPort: Number.parseInt(String(process.env.MYSQL_PORT || mysqlEnv.MYSQL_PORT || "3306"), 10) || 3306,
-    mysqlDatabase: String(process.env.MYSQL_DATABASE || mysqlEnv.MYSQL_DATABASE || "").trim(),
-    mysqlUser: String(process.env.MYSQL_USER || mysqlEnv.VECTORIZER_MYSQL_USER || mysqlEnv.MYSQL_USER || "").trim(),
-    mysqlPassword: String(process.env.MYSQL_PASSWORD || mysqlEnv.VECTORIZER_MYSQL_PASSWORD || mysqlEnv.MYSQL_PASSWORD || "").trim(),
+    ollamaUrl: String(process.env.OLLAMA_URL || localEnv.OLLAMA_URL || DEFAULT_OLLAMA_URL).replace(/\/+$/, ""),
+    model: String(process.env.OLLAMA_MODEL || localEnv.OLLAMA_MODEL || DEFAULT_MODEL).trim() || DEFAULT_MODEL,
+    mysqlHost: mysqlHostRaw === "%" ? "127.0.0.1" : mysqlHostRaw,
+    mysqlPort:
+      Number.parseInt(String(process.env.MYSQL_PORT || localEnv.MYSQL_PORT || mysqlEnv.MYSQL_PORT || "3306"), 10) || 3306,
+    mysqlDatabase: String(process.env.MYSQL_DATABASE || localEnv.MYSQL_DATABASE || mysqlEnv.MYSQL_DATABASE || "").trim(),
+    mysqlUser: String(
+      process.env.MYSQL_USER || localEnv.MYSQL_USER || mysqlEnv.VECTORIZER_MYSQL_USER || mysqlEnv.MYSQL_USER || "",
+    ).trim(),
+    mysqlPassword: String(
+      process.env.MYSQL_PASSWORD ||
+        localEnv.MYSQL_PASSWORD ||
+        mysqlEnv.VECTORIZER_MYSQL_PASSWORD ||
+        mysqlEnv.MYSQL_PASSWORD ||
+        "",
+    ).trim(),
   };
 }
 
