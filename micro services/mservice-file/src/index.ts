@@ -1211,6 +1211,29 @@ function extractLanguageConstraintsFromPrompt(prompt: string): string[] {
   return patterns.filter((item) => item.rx.test(text)).map((item) => item.key);
 }
 
+function summaryMatchesGradeConstraint(summary: string, gradeConstraints: number[]): boolean {
+  if (!Array.isArray(gradeConstraints) || gradeConstraints.length === 0) {
+    return true;
+  }
+  const summaryGrades = parseGradeNumbersFromText(summary);
+  if (summaryGrades.length === 0) {
+    return false;
+  }
+  const allowed = new Set(gradeConstraints);
+  return summaryGrades.some((grade) => allowed.has(grade));
+}
+
+function summaryMatchesLanguageConstraint(summary: string, languageConstraints: string[]): boolean {
+  if (!Array.isArray(languageConstraints) || languageConstraints.length === 0) {
+    return true;
+  }
+  const found = new Set(extractLanguageConstraintsFromPrompt(summary));
+  if (found.size === 0) {
+    return false;
+  }
+  return languageConstraints.some((lang) => found.has(lang));
+}
+
 async function extractSonjaSearchKeywords(prompt: string): Promise<string[]> {
   const fallback = extractPromptSearchTokens(prompt).slice(0, 8);
   const parsed = await sendSonjaJsonRequestToAssistant({
@@ -1249,6 +1272,18 @@ async function scoreSonjaCandidateMatch(args: {
   subjectConstraints: string[];
   languageConstraints: string[];
 }): Promise<{ score: number; matched: boolean; reason: string }> {
+  const strictGradeLanguage = args.gradeConstraints.length > 0 && args.languageConstraints.length > 0;
+  if (strictGradeLanguage) {
+    const gradeOk = summaryMatchesGradeConstraint(args.summary, args.gradeConstraints);
+    const languageOk = summaryMatchesLanguageConstraint(args.summary, args.languageConstraints);
+    if (!gradeOk || !languageOk) {
+      return {
+        score: 0,
+        matched: false,
+        reason: `strict grade/language mismatch (grade_ok=${gradeOk}, language_ok=${languageOk})`,
+      };
+    }
+  }
   const parsed = await sendSonjaJsonRequestToAssistant({
     model: SONJA_MATCH_MODEL,
     system:
@@ -1268,6 +1303,7 @@ async function scoreSonjaCandidateMatch(args: {
         'If grade constraints are present, do not match if grade intent conflicts.',
         'If subject constraints are present, do not match if subject intent conflicts.',
         'If language constraints are present, do not match if language intent conflicts.',
+        'If BOTH grade and language constraints are present, matching is strict for both.',
       ],
     }),
     temperature: 0.05,
