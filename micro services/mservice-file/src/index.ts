@@ -3048,6 +3048,8 @@ app.get('/file/records', authMiddleware, async (req, res) => {
     const dbCtx = await getDbContext(owner);
     const limitRaw = Number(req.query.limit);
     const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.floor(limitRaw), 500) : 100;
+    const offsetRaw = Number(req.query.offset);
+    const offset = Number.isFinite(offsetRaw) && offsetRaw >= 0 ? Math.floor(offsetRaw) : 0;
     const source = typeof req.query.source === 'string' ? req.query.source.trim() : '';
     const sourceSender = typeof req.query.source_sender === 'string' ? req.query.source_sender.trim() : '';
     const sourceMessageId =
@@ -3076,9 +3078,17 @@ app.get('/file/records', authMiddleware, async (req, res) => {
       `SELECT id, source, source_message_id, source_sender, bucket, s3_key, filename, content_type, size_bytes, caption, ` +
       `pdf_text_length, summary, content_scope, summary_status, summary_error, created_at, updated_at FROM files ` +
       `${where.length > 0 ? `WHERE ${where.join(' AND ')} ` : ''}` +
-      `ORDER BY id DESC LIMIT ?;`;
-    const rows = await dbCtx.dbAll(sql, ...params, limit);
-    res.json({ success: true, owner, count: rows.length, files: rows });
+      `ORDER BY id DESC LIMIT ? OFFSET ?;`;
+    const rows = await dbCtx.dbAll(sql, ...params, limit, offset);
+    res.json({
+      success: true,
+      owner,
+      count: rows.length,
+      limit,
+      offset,
+      next_offset: offset + rows.length,
+      files: rows,
+    });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err?.message || 'records query failed' });
   }

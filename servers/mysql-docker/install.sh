@@ -2,7 +2,7 @@
 set -euo pipefail
 
 MONOREPO_URL="${MONOREPO_URL:-https://github.com/jaco-co-za/my-ai-assistant.git}"
-MONOREPO_BRANCH="${MONOREPO_BRANCH:-main}"
+MONOREPO_BRANCH="${MONOREPO_BRANCH:-master}"
 MONOREPO_DIR="${MONOREPO_DIR:-$HOME/my-ai-assistant}"
 SERVER_RELATIVE_DIR="servers/mysql-docker"
 SHARED_DOCKER_NETWORK="${SHARED_DOCKER_NETWORK:-ai-assistant-network}"

@@ -184,21 +184,34 @@ async function resolveConfig() {
 }
 
 async function listSonjaFiles(config) {
-  const url = `${config.fileServiceUrl}/file/records?owner=${encodeURIComponent(config.owner)}`;
-  const response = await fetchWithTimeout(url, {
-    headers: { Authorization: config.fileServiceAuth, Accept: "application/json" },
-  });
-  const raw = await response.text();
-  let parsed = {};
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    parsed = {};
+  const pageSize = 500;
+  let offset = 0;
+  const all = [];
+  while (true) {
+    const url =
+      `${config.fileServiceUrl}/file/records?owner=${encodeURIComponent(config.owner)}` +
+      `&limit=${encodeURIComponent(String(pageSize))}&offset=${encodeURIComponent(String(offset))}`;
+    const response = await fetchWithTimeout(url, {
+      headers: { Authorization: config.fileServiceAuth, Accept: "application/json" },
+    });
+    const raw = await response.text();
+    let parsed = {};
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      parsed = {};
+    }
+    if (!response.ok || !parsed.success) {
+      throw new Error(parsed.message || raw || `Failed to list files (${response.status})`);
+    }
+    const page = Array.isArray(parsed.files) ? parsed.files : [];
+    all.push(...page);
+    if (page.length < pageSize) {
+      break;
+    }
+    offset += page.length;
   }
-  if (!response.ok || !parsed.success) {
-    throw new Error(parsed.message || raw || `Failed to list files (${response.status})`);
-  }
-  return Array.isArray(parsed.files) ? parsed.files : [];
+  return all;
 }
 
 async function downloadFile(config, fileId) {
