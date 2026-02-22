@@ -19,3 +19,7 @@ dist/
 coverage/
 micro services/mss-homeassistant/backups/20260220-130704/cache.db
 micro services/mss-homeassistant/backups/20260220-130704/learnings.db
+
+# Runtime database / container state
+servers/mysql-docker/data/
+micro services/mservice-file/data/
