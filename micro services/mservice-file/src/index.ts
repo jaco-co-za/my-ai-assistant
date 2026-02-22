@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import crypto from 'node:crypto';
 import dotenv from 'dotenv';
 import sqlite3 from 'sqlite3';
+import mysql from 'mysql2/promise';
 import PDFParser from 'pdf2json';
 import mammoth from 'mammoth';
 import sharp from 'sharp';
@@ -64,6 +65,34 @@ const FILE_QUERY_ASSISTANT_RETRY_DELAY_MS = Number.parseInt(process.env.FILE_QUE
 const FILE_QUERY_USE_ASSISTANT = String(process.env.FILE_QUERY_USE_ASSISTANT || 'false').toLowerCase() === 'true';
 const SONJA_REFINEMENT_ENABLED = String(process.env.SONJA_REFINEMENT_ENABLED || 'true').toLowerCase() === 'true';
 const SONJA_STRICT_LLM_COMPLETION = String(process.env.SONJA_STRICT_LLM_COMPLETION || 'true').toLowerCase() === 'true';
+const SONJA_EMBEDDING_SEARCH_ENABLED = String(process.env.SONJA_EMBEDDING_SEARCH_ENABLED || 'true').toLowerCase() !== 'false';
+const SONJA_EMBEDDING_OLLAMA_URL = (process.env.SONJA_EMBEDDING_OLLAMA_URL || process.env.OLLAMA_URL || 'http://192.168.55.73:11434')
+  .trim()
+  .replace(/\/+$/, '');
+const SONJA_EMBEDDING_MODEL = (process.env.SONJA_EMBEDDING_MODEL || 'qwen3-embedding').trim();
+const SONJA_EMBEDDING_CANDIDATE_LIMIT = Number.parseInt(process.env.SONJA_EMBEDDING_CANDIDATE_LIMIT || '2000', 10);
+const SONJA_EMBEDDING_MIN_SCORE = Number.parseFloat(process.env.SONJA_EMBEDDING_MIN_SCORE || '0');
+const VECTOR_MYSQL_HOST_RAW = (
+  process.env.VECTOR_MYSQL_HOST ||
+  process.env.MYSQL_HOST ||
+  process.env.VECTORIZER_MYSQL_HOST ||
+  '127.0.0.1'
+).trim();
+const VECTOR_MYSQL_HOST = VECTOR_MYSQL_HOST_RAW === '%' ? '127.0.0.1' : VECTOR_MYSQL_HOST_RAW;
+const VECTOR_MYSQL_PORT = Number.parseInt(process.env.VECTOR_MYSQL_PORT || process.env.MYSQL_PORT || '3306', 10);
+const VECTOR_MYSQL_DATABASE = (process.env.VECTOR_MYSQL_DATABASE || process.env.MYSQL_DATABASE || '').trim();
+const VECTOR_MYSQL_USER = (
+  process.env.VECTOR_MYSQL_USER ||
+  process.env.MYSQL_USER ||
+  process.env.VECTORIZER_MYSQL_USER ||
+  ''
+).trim();
+const VECTOR_MYSQL_PASSWORD = (
+  process.env.VECTOR_MYSQL_PASSWORD ||
+  process.env.MYSQL_PASSWORD ||
+  process.env.VECTORIZER_MYSQL_PASSWORD ||
+  ''
+).trim();
 const FILE_EXTRACTION_TIMEOUT_MS = Number.parseInt(process.env.FILE_EXTRACTION_TIMEOUT_MS || '120000', 10);
 const S3_OPERATION_TIMEOUT_MS = Number.parseInt(process.env.S3_OPERATION_TIMEOUT_MS || '60000', 10);
 const FILE_SUMMARY_TEXT_LIMIT = Number.parseInt(process.env.FILE_SUMMARY_TEXT_LIMIT || '12000', 10);
@@ -108,6 +137,7 @@ type DbContext = {
 };
 const dbContexts = new Map<string, DbContext>();
 const activeSummaryAbortControllers = new Map<string, AbortController>();
+let vectorMysqlPool: mysql.Pool | null = null;
 
 type SummaryStatus = 'pending' | 'completed' | 'failed' | 'skipped';
 type ContentScope = 'business' | 'personal';
@@ -120,6 +150,8 @@ type FileSqlPlan = {
   delivery: 'attach' | 'none';
   sql: string;
 };
+
+type FileSearchMode = 'summary-like' | 'assistant' | 'embedding';
 
 type SonjaReviewResult = {
   confidence: number;
@@ -1519,6 +1551,187 @@ function applyPromptTokenRelevanceFilter(rows: any[], prompt: string): any[] {
   });
 }
 
+function canUseSonjaEmbeddingSearch(): boolean {
+  return (
+    SONJA_EMBEDDING_SEARCH_ENABLED &&
+    Boolean(SONJA_EMBEDDING_OLLAMA_URL) &&
+    Boolean(VECTOR_MYSQL_DATABASE) &&
+    Boolean(VECTOR_MYSQL_USER) &&
+    Boolean(VECTOR_MYSQL_PASSWORD)
+  );
+}
+
+async function getVectorMysqlPool(): Promise<mysql.Pool> {
+  if (vectorMysqlPool) {
+    return vectorMysqlPool;
+  }
+  vectorMysqlPool = mysql.createPool({
+    host: VECTOR_MYSQL_HOST || '127.0.0.1',
+    port: Number.isFinite(VECTOR_MYSQL_PORT) && VECTOR_MYSQL_PORT > 0 ? VECTOR_MYSQL_PORT : 3306,
+    database: VECTOR_MYSQL_DATABASE,
+    user: VECTOR_MYSQL_USER,
+    password: VECTOR_MYSQL_PASSWORD,
+    waitForConnections: true,
+    connectionLimit: 5,
+    queueLimit: 0,
+    charset: 'utf8mb4',
+  });
+  return vectorMysqlPool;
+}
+
+function vectorDot(a: number[], b: number[]): number {
+  const n = Math.min(a.length, b.length);
+  let sum = 0;
+  for (let i = 0; i < n; i += 1) {
+    sum += (a[i] || 0) * (b[i] || 0);
+  }
+  return sum;
+}
+
+function vectorNorm(a: number[]): number {
+  return Math.sqrt(vectorDot(a, a));
+}
+
+function vectorCosine(a: number[], b: number[], na: number, nb: number): number {
+  if (!na || !nb) {
+    return 0;
+  }
+  return vectorDot(a, b) / (na * nb);
+}
+
+function toEmbeddingVector(raw: unknown): number[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value));
+}
+
+async function embedPromptForSonjaSearch(prompt: string): Promise<number[]> {
+  const response = await withTimeout(
+    fetch(`${SONJA_EMBEDDING_OLLAMA_URL}/api/embed`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({
+        model: SONJA_EMBEDDING_MODEL,
+        input: prompt,
+      }),
+    }),
+    FILE_QUERY_ASSISTANT_TIMEOUT_MS,
+    'sonja embedding request',
+  );
+  const raw = await response.text();
+  if (!response.ok) {
+    throw new Error(`sonja embedding query failed (${response.status}): ${raw}`);
+  }
+  const parsed = JSON.parse(raw);
+  const vector = Array.isArray(parsed?.embeddings) ? parsed.embeddings[0] : parsed?.embedding;
+  const out = toEmbeddingVector(vector);
+  if (out.length === 0) {
+    throw new Error('sonja embedding query returned empty vector');
+  }
+  return out;
+}
+
+function parseSubjectFiltersFromPrompt(prompt: string): string[] {
+  const subjects = Array.from(detectSubjects(prompt));
+  if (subjects.length === 0) {
+    return [];
+  }
+  const expanded = new Set<string>();
+  for (const subject of subjects) {
+    if (subject === 'language') {
+      expanded.add('afrikaans');
+      expanded.add('english');
+      continue;
+    }
+    expanded.add(subject);
+  }
+  return Array.from(expanded).filter((value) => value !== 'unknown');
+}
+
+async function runSonjaEmbeddingSearch(args: {
+  prompt: string;
+  owner: string;
+}): Promise<{ ids: number[]; debugSql: string }> {
+  if (!canUseSonjaEmbeddingSearch()) {
+    return { ids: [], debugSql: '/* sonja embedding search unavailable: missing config */' };
+  }
+  const pool = await getVectorMysqlPool();
+  const queryVec = await embedPromptForSonjaSearch(args.prompt);
+  const queryNorm = vectorNorm(queryVec);
+  const tokens = extractPromptSearchTokens(args.prompt).slice(0, 8);
+  const gradeNumbers = parseGradeNumbersFromText(args.prompt);
+  const subjects = parseSubjectFiltersFromPrompt(args.prompt);
+  const where: string[] = ['owner = ?'];
+  const params: unknown[] = [normalizeOwner(args.owner)];
+  if (gradeNumbers.length > 0) {
+    const placeholders = gradeNumbers.map(() => '?').join(',');
+    where.push(`grade IN (${placeholders})`);
+    params.push(...gradeNumbers);
+  }
+  if (subjects.length > 0) {
+    const placeholders = subjects.map(() => '?').join(',');
+    where.push(`subject IN (${placeholders})`);
+    params.push(...subjects);
+  }
+  if (tokens.length > 0) {
+    const tokenClauses: string[] = [];
+    for (const token of tokens) {
+      tokenClauses.push('(LOWER(COALESCE(filename,\'\')) LIKE ? OR LOWER(COALESCE(summary,\'\')) LIKE ?)');
+      const like = tokenToLikePattern(token);
+      params.push(like, like);
+    }
+    where.push(`(${tokenClauses.join(' OR ')})`);
+  }
+  const candidateLimit = Math.max(100, Math.min(10000, Number.isFinite(SONJA_EMBEDDING_CANDIDATE_LIMIT) ? SONJA_EMBEDDING_CANDIDATE_LIMIT : 2000));
+  params.push(candidateLimit);
+  const sql =
+    'SELECT file_id, filename, chunk_index, embedding_json ' +
+    'FROM sonja_file_embedding_chunks ' +
+    `WHERE ${where.join(' AND ')} ` +
+    'ORDER BY updated_at DESC LIMIT ?';
+
+  const [rows] = await pool.query(sql, params);
+  const rankedByFile = new Map<number, { fileId: number; score: number }>();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const fileId = Number((row as any)?.file_id);
+    if (!Number.isFinite(fileId) || fileId <= 0) {
+      continue;
+    }
+    const embeddingRaw = (row as any)?.embedding_json;
+    let parsed: unknown = embeddingRaw;
+    if (typeof embeddingRaw === 'string') {
+      try {
+        parsed = JSON.parse(embeddingRaw);
+      } catch {
+        parsed = null;
+      }
+    }
+    const vec = toEmbeddingVector(parsed);
+    if (vec.length === 0) {
+      continue;
+    }
+    const score = vectorCosine(vec, queryVec, vectorNorm(vec), queryNorm);
+    if (Number.isFinite(SONJA_EMBEDDING_MIN_SCORE) && score < SONJA_EMBEDDING_MIN_SCORE) {
+      continue;
+    }
+    const existing = rankedByFile.get(fileId);
+    if (!existing || score > existing.score) {
+      rankedByFile.set(fileId, { fileId, score });
+    }
+  }
+  const ids = Array.from(rankedByFile.values())
+    .sort((a, b) => b.score - a.score)
+    .slice(0, FILE_SQL_MAX_ROWS)
+    .map((entry) => entry.fileId);
+  return { ids, debugSql: `${sql} /* vector-ranked files=${ids.length} */` };
+}
+
 function normalizeDateLiteral(value: string): string | null {
   const raw = String(value || '').trim().replace(/\//g, '-');
   const match = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
@@ -1714,21 +1927,50 @@ async function runFileSearchQuery(args: {
   dbCtx: DbContext;
   sourceChannel: string;
   sourceFrom: string;
-}): Promise<{ rows: any[]; effectiveSql: string; delivery: 'attach' | 'none' }> {
+}): Promise<{ rows: any[]; effectiveSql: string; delivery: 'attach' | 'none'; searchMode: FileSearchMode }> {
   const isSonjaOwner = normalizeOwner(args.owner) === SONJA_OWNER;
   const dateConstraint = extractDateConstraintFromPrompt(args.prompt);
   if (isSonjaOwner) {
-    const sonjaPrompt = String(args.prompt || '').toLowerCase();
-    const summaryQuery = buildSummaryFallbackQuery(sonjaPrompt, dateConstraint);
+    const sonjaPrompt = String(args.prompt || '').trim();
+    const embedded = await runSonjaEmbeddingSearch({ prompt: sonjaPrompt, owner: args.owner }).catch(() => ({
+      ids: [] as number[],
+      debugSql: '/* sonja embedding search failed */',
+    }));
+    if (embedded.ids.length > 0) {
+      const placeholders = embedded.ids.map(() => '?').join(',');
+      const rowsById = await args.dbCtx.dbAll(
+        `SELECT id, bucket, s3_key, filename, content_type, size_bytes, caption, summary, content_scope, summary_status, created_at
+         FROM files
+         WHERE id IN (${placeholders});`,
+        ...embedded.ids,
+      );
+      let rows = await filterRowsForOwnerSearch({ owner: args.owner, rows: rowsById, dbCtx: args.dbCtx });
+      const order = new Map<number, number>();
+      embedded.ids.forEach((id, index) => order.set(id, index));
+      rows.sort((a, b) => {
+        const ai = order.get(Number(a?.id)) ?? Number.MAX_SAFE_INTEGER;
+        const bi = order.get(Number(b?.id)) ?? Number.MAX_SAFE_INTEGER;
+        return ai - bi;
+      });
+      const delivery = wantsFileDelivery(args.prompt) ? 'attach' : 'none';
+      return {
+        rows,
+        effectiveSql: `${embedded.debugSql} /* sonja embedding search */`,
+        delivery,
+        searchMode: 'embedding',
+      };
+    }
+
+    const summaryQuery = buildSummaryFallbackQuery(sonjaPrompt.toLowerCase(), dateConstraint);
     let rows = summaryQuery ? await args.dbCtx.dbAll(summaryQuery.sql, ...summaryQuery.params) : [];
     rows = await filterRowsForOwnerSearch({ owner: args.owner, rows, dbCtx: args.dbCtx });
     rows = applyPromptTokenRelevanceFilter(rows, sonjaPrompt);
     const emptySql =
       'SELECT id, bucket, s3_key, filename, content_type, size_bytes, caption, summary, content_scope, summary_status, created_at ' +
       'FROM files WHERE 1=0';
-    const effectiveSql = `${summaryQuery?.sql || emptySql} /* sonja summary-like search only */`;
+    const effectiveSql = `${summaryQuery?.sql || emptySql} /* sonja summary-like search fallback */`;
     const delivery = wantsFileDelivery(args.prompt) ? 'attach' : 'none';
-    return { rows, effectiveSql, delivery };
+    return { rows, effectiveSql, delivery, searchMode: 'summary-like' };
   }
 
   const planPayload = {
@@ -1799,7 +2041,7 @@ async function runFileSearchQuery(args: {
     effectiveSql = `${effectiveSql || fallbackSql} /* personal scope excluded for sonja */`;
   }
   const delivery = parsedPlan?.delivery === 'attach' || wantsFileDelivery(args.prompt) ? 'attach' : 'none';
-  return { rows, effectiveSql, delivery };
+  return { rows, effectiveSql, delivery, searchMode: 'assistant' };
 }
 
 async function refineSonjaSearchResults(args: {
@@ -2899,7 +3141,7 @@ app.post('/llm-query', authMiddleware, async (req, res) => {
         initialSql: initialQuery.effectiveSql,
       });
     let rows = refinement.rows;
-    if (normalizeOwner(owner) === SONJA_OWNER) {
+    if (normalizeOwner(owner) === SONJA_OWNER && initialQuery.searchMode !== 'embedding') {
       rows = applyPromptTokenRelevanceFilter(rows, prompt);
     }
     const effectiveSql = refinement.effectiveSql || initialQuery.effectiveSql;
@@ -2984,6 +3226,7 @@ app.post('/llm-query', authMiddleware, async (req, res) => {
       rows,
       sql: effectiveSql,
       delivery,
+      search_mode: initialQuery.searchMode,
       refinement:
         normalizeOwner(owner) === SONJA_OWNER
           ? { enabled: false }

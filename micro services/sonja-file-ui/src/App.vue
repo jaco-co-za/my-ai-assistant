@@ -83,6 +83,7 @@ async function queryFiles() {
       body: JSON.stringify({
         owner: "sonja",
         query_owner: "sonja",
+        search_mode: "embedding",
         prompt: effectivePrompt.value,
       }),
     });
@@ -205,7 +206,7 @@ onBeforeUnmount(() => {
   <main class="page">
     <section class="panel">
       <h1>Sonja Files</h1>
-      <p class="hint">File retrieval only.</p>
+      <p class="hint">File retrieval only (semantic vector search).</p>
       <div class="prompt-row">
         <textarea
           v-model="prompt"

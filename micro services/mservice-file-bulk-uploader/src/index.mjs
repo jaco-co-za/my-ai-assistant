@@ -1,8 +1,10 @@
 #!/usr/bin/env node
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import mysql from "mysql2/promise";
 
 const KNOWN_EXTENSIONS = new Set([
   ".jpg",
@@ -38,6 +40,10 @@ const HTTP_TIMEOUT_MS = 60 * 1000;
 const PENDING_LOG_INTERVAL_MS = 30 * 1000;
 const DEFAULT_BASE_HOST = "192.168.55.113";
 const LEGACY_BASE_HOST = "192.168.55.73";
+const DEFAULT_OLLAMA_URL = `http://${DEFAULT_BASE_HOST}:11434`;
+const DEFAULT_OLLAMA_MODEL = "qwen3-embedding";
+const DEFAULT_LARGE_FILE_BYTES = 1024 * 1024;
+const DEFAULT_CHUNK_BYTES = 250 * 1024;
 
 function printUsage() {
   console.log("Usage: node src/index.mjs <absolute-path> [limit=1] [Sonja] [recursive=true|false]");
@@ -103,6 +109,19 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function toInt(value, fallback) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function trimQuotes(value) {
+  const raw = String(value || "").trim();
+  if ((raw.startsWith("\"") && raw.endsWith("\"")) || (raw.startsWith("'") && raw.endsWith("'"))) {
+    return raw.slice(1, -1);
+  }
+  return raw;
+}
+
 async function fetchWithTimeout(url, options = {}, timeoutMs = HTTP_TIMEOUT_MS) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -111,6 +130,377 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = HTTP_TIMEOUT_MS) 
   } finally {
     clearTimeout(timer);
   }
+}
+
+function splitBuffer(buffer, chunkBytes) {
+  const chunks = [];
+  for (let offset = 0; offset < buffer.length; offset += chunkBytes) {
+    chunks.push(buffer.subarray(offset, Math.min(buffer.length, offset + chunkBytes)));
+  }
+  return chunks.length > 0 ? chunks : [Buffer.alloc(0)];
+}
+
+function normalizeClassifierText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isValidGrade(value) {
+  return Number.isFinite(value) && value >= 0 && value <= 12;
+}
+
+function extractGradeCandidates(text) {
+  const normalized = normalizeClassifierText(text);
+  if (!normalized) {
+    return [];
+  }
+  const out = [];
+  const directNumericPatterns = [
+    /\b(?:grade|graad|gr)\s*\.?\s*(\d{1,2})\b/g,
+    /\bg\s*\.?\s*(\d{1,2})\b/g,
+  ];
+  for (const pattern of directNumericPatterns) {
+    let match = null;
+    while ((match = pattern.exec(normalized)) !== null) {
+      const grade = Number(match[1]);
+      if (isValidGrade(grade)) {
+        out.push(grade);
+      }
+    }
+  }
+  return out;
+}
+
+function pickMostLikelyGrade(candidates) {
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    return null;
+  }
+  const counts = new Map();
+  for (const grade of candidates) {
+    counts.set(grade, (counts.get(grade) || 0) + 1);
+  }
+  let bestGrade = null;
+  let bestCount = -1;
+  for (const [grade, count] of counts.entries()) {
+    if (count > bestCount) {
+      bestGrade = grade;
+      bestCount = count;
+      continue;
+    }
+    if (count === bestCount && bestGrade !== null && grade > bestGrade) {
+      bestGrade = grade;
+    }
+  }
+  return bestGrade;
+}
+
+function detectGrade(summary, filename) {
+  const filenameCandidates = extractGradeCandidates(filename);
+  if (filenameCandidates.length > 0) {
+    return pickMostLikelyGrade(filenameCandidates);
+  }
+  const summaryCandidates = extractGradeCandidates(summary);
+  if (summaryCandidates.length > 0) {
+    return pickMostLikelyGrade(summaryCandidates);
+  }
+  return null;
+}
+
+const SUBJECT_RULES = [
+  { key: "math", patterns: [/\bmath\b/, /\bmaths\b/, /\bmathematics\b/, /\bwiskunde\b/, /\boptel\b/, /\baftrek\b/] },
+  { key: "afrikaans", patterns: [/\bafrikaans\b/, /\bafr\b/] },
+  { key: "english", patterns: [/\benglish\b/, /\beng\b/] },
+  { key: "science", patterns: [/\bscience\b/, /\bnatuurwetenskap\b/, /\bnatural sciences\b/, /\bnst\b/] },
+];
+
+function detectSubject(summary, filename) {
+  const value = normalizeClassifierText(`${filename} ${summary}`);
+  if (!value) {
+    return "unknown";
+  }
+  let best = "unknown";
+  let bestScore = 0;
+  for (const rule of SUBJECT_RULES) {
+    let score = 0;
+    for (const pattern of rule.patterns) {
+      if (pattern.test(value)) {
+        score += 1;
+      }
+    }
+    if (score > bestScore) {
+      best = rule.key;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+function parseEducational(summary, filename, grade, subject) {
+  const value = normalizeClassifierText(`${summary} ${filename}`);
+  if (
+    /\bbank statement\b|\bcredit facility\b|\bquotation\b|\binvoice\b|\bproof of payment\b|\bid document\b/.test(value)
+  ) {
+    return 0;
+  }
+  if (
+    /\bworksheet\b|\bworkbook\b|\blesson\b|\bactivity\b|\bassessment\b|\btoets\b|\boefening\b|\bbegripslees\b/.test(value)
+  ) {
+    return 1;
+  }
+  return grade !== null || subject !== "unknown" ? 1 : 0;
+}
+
+async function ensureVectorChunkTable(connection) {
+  await connection.execute(
+    `CREATE TABLE IF NOT EXISTS sonja_file_embedding_chunks (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      owner VARCHAR(64) NOT NULL,
+      file_id BIGINT UNSIGNED NOT NULL,
+      chunk_index INT UNSIGNED NOT NULL,
+      chunk_count INT UNSIGNED NOT NULL,
+      chunk_size_bytes INT UNSIGNED NOT NULL,
+      s3_key VARCHAR(1024) NULL,
+      filename VARCHAR(512) NULL,
+      content_type VARCHAR(255) NULL,
+      summary LONGTEXT NULL,
+      grade TINYINT UNSIGNED NULL,
+      subject VARCHAR(64) NOT NULL DEFAULT 'unknown',
+      educational TINYINT(1) NOT NULL DEFAULT 0,
+      embedding_model VARCHAR(128) NOT NULL,
+      embedding_dim INT UNSIGNED NOT NULL,
+      embedding_json JSON NOT NULL,
+      content_hash CHAR(64) NOT NULL,
+      metadata_json JSON NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      UNIQUE KEY uq_owner_file_chunk_model (owner, file_id, chunk_index, embedding_model),
+      KEY idx_owner_file (owner, file_id),
+      KEY idx_owner_grade_subject (owner, grade, subject),
+      KEY idx_owner_educational (owner, educational)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+  );
+}
+
+async function loadExistingChunkIndex(connection, owner, fileId, embeddingModel) {
+  const [rows] = await connection.execute(
+    `SELECT chunk_index, content_hash
+     FROM sonja_file_embedding_chunks
+     WHERE owner = ? AND file_id = ? AND embedding_model = ?`,
+    [owner, fileId, embeddingModel],
+  );
+  const map = new Map();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    map.set(Number(row.chunk_index), String(row.content_hash || "").toLowerCase());
+  }
+  return map;
+}
+
+async function deleteStaleChunks(connection, owner, fileId, embeddingModel, chunkCount) {
+  await connection.execute(
+    `DELETE FROM sonja_file_embedding_chunks
+     WHERE owner = ? AND file_id = ? AND embedding_model = ? AND chunk_index >= ?`,
+    [owner, fileId, embeddingModel, chunkCount],
+  );
+}
+
+async function upsertChunk(connection, row) {
+  await connection.execute(
+    `INSERT INTO sonja_file_embedding_chunks (
+      owner, file_id, chunk_index, chunk_count, chunk_size_bytes, s3_key, filename, content_type, summary,
+      grade, subject, educational, embedding_model, embedding_dim, embedding_json, content_hash, metadata_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), ?, CAST(? AS JSON))
+    ON DUPLICATE KEY UPDATE
+      chunk_count = VALUES(chunk_count),
+      chunk_size_bytes = VALUES(chunk_size_bytes),
+      s3_key = VALUES(s3_key),
+      filename = VALUES(filename),
+      content_type = VALUES(content_type),
+      summary = VALUES(summary),
+      grade = VALUES(grade),
+      subject = VALUES(subject),
+      educational = VALUES(educational),
+      embedding_dim = VALUES(embedding_dim),
+      embedding_json = VALUES(embedding_json),
+      content_hash = VALUES(content_hash),
+      metadata_json = VALUES(metadata_json),
+      updated_at = CURRENT_TIMESTAMP`,
+    [
+      row.owner,
+      row.fileId,
+      row.chunkIndex,
+      row.chunkCount,
+      row.chunkSizeBytes,
+      row.s3Key,
+      row.filename,
+      row.contentType,
+      row.summary,
+      row.grade,
+      row.subject,
+      row.educational,
+      row.embeddingModel,
+      row.embeddingDim,
+      JSON.stringify(row.embedding),
+      row.contentHash,
+      JSON.stringify(row.metadata || {}),
+    ],
+  );
+}
+
+async function updateChunkMetadataOnly(connection, row) {
+  await connection.execute(
+    `UPDATE sonja_file_embedding_chunks
+     SET
+      chunk_count = ?,
+      chunk_size_bytes = ?,
+      s3_key = ?,
+      filename = ?,
+      content_type = ?,
+      summary = ?,
+      grade = ?,
+      subject = ?,
+      educational = ?,
+      content_hash = ?,
+      metadata_json = CAST(? AS JSON),
+      updated_at = CURRENT_TIMESTAMP
+     WHERE owner = ? AND file_id = ? AND chunk_index = ? AND embedding_model = ?`,
+    [
+      row.chunkCount,
+      row.chunkSizeBytes,
+      row.s3Key,
+      row.filename,
+      row.contentType,
+      row.summary,
+      row.grade,
+      row.subject,
+      row.educational,
+      row.contentHash,
+      JSON.stringify(row.metadata || {}),
+      row.owner,
+      row.fileId,
+      row.chunkIndex,
+      row.embeddingModel,
+    ],
+  );
+}
+
+async function embedChunk(ollamaUrl, model, payload) {
+  const response = await fetchWithTimeout(`${ollamaUrl}/api/embed`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ model, input: payload }),
+  });
+  const raw = await response.text();
+  if (!response.ok) {
+    throw new Error(`Ollama embed failed (${response.status}): ${raw}`);
+  }
+  const parsed = JSON.parse(raw);
+  if (Array.isArray(parsed.embeddings) && Array.isArray(parsed.embeddings[0])) {
+    return parsed.embeddings[0];
+  }
+  if (Array.isArray(parsed.embedding)) {
+    return parsed.embedding;
+  }
+  throw new Error("Ollama embed response missing embedding array");
+}
+
+async function downloadFileById(fileBaseUrl, statusAuth, owner, fileId) {
+  const url = `${fileBaseUrl}/file/download?owner=${encodeURIComponent(owner)}&id=${encodeURIComponent(String(fileId))}`;
+  const response = await fetchWithTimeout(url, {
+    headers: { Authorization: statusAuth },
+  });
+  if (!response.ok) {
+    const raw = await response.text().catch(() => "");
+    throw new Error(`download failed for file ${fileId} (${response.status}): ${raw}`);
+  }
+  const arrayBuffer = await response.arrayBuffer();
+  const contentType = response.headers.get("content-type") || "application/octet-stream";
+  return { buffer: Buffer.from(arrayBuffer), contentType };
+}
+
+async function vectorizeUploadedFile({
+  connection,
+  fileBaseUrl,
+  statusAuth,
+  owner,
+  fileId,
+  s3Key,
+  filename,
+  contentType,
+  summary,
+  model,
+  ollamaUrl,
+  largeFileBytes,
+  chunkBytes,
+}) {
+  const downloaded = await downloadFileById(fileBaseUrl, statusAuth, owner, fileId);
+  const payloadBuffer = downloaded.buffer;
+  const resolvedContentType = downloaded.contentType || contentType || "application/octet-stream";
+  const grade = detectGrade(summary, filename);
+  const subject = detectSubject(summary, filename);
+  const educational = parseEducational(summary, filename, grade, subject);
+  const chunks = payloadBuffer.length > largeFileBytes ? splitBuffer(payloadBuffer, chunkBytes) : [payloadBuffer];
+  const existingByChunk = await loadExistingChunkIndex(connection, owner, fileId, model);
+
+  let embedded = 0;
+  let skipped = 0;
+  for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
+    const chunk = chunks[chunkIndex];
+    const contentHash = createHash("sha256").update(chunk).digest("hex");
+    const row = {
+      owner,
+      fileId,
+      chunkIndex,
+      chunkCount: chunks.length,
+      chunkSizeBytes: chunk.length,
+      s3Key,
+      filename,
+      contentType: resolvedContentType,
+      summary,
+      grade,
+      subject,
+      educational,
+      embeddingModel: model,
+      contentHash,
+      metadata: {
+        source: "mservice-file-bulk-uploader",
+        chunking_rule: {
+          large_file_bytes: largeFileBytes,
+          chunk_bytes: chunkBytes,
+        },
+      },
+    };
+    const existingHash = existingByChunk.get(chunkIndex);
+    if (existingHash && existingHash === contentHash.toLowerCase()) {
+      await updateChunkMetadataOnly(connection, row);
+      skipped += 1;
+      continue;
+    }
+    const chunkText = [
+      `owner=${owner}`,
+      `file_id=${fileId}`,
+      `filename=${filename}`,
+      `content_type=${resolvedContentType}`,
+      `chunk_index=${chunkIndex}`,
+      `chunk_count=${chunks.length}`,
+      `encoding=base64`,
+      `data=${chunk.toString("base64")}`,
+    ].join("\n");
+    const embedding = await embedChunk(ollamaUrl, model, chunkText);
+    await upsertChunk(connection, {
+      ...row,
+      embedding,
+      embeddingDim: embedding.length,
+    });
+    embedded += 1;
+  }
+  await deleteStaleChunks(connection, owner, fileId, model, chunks.length);
+  return { embedded, skipped, chunkCount: chunks.length };
 }
 
 function parseRecursiveFlag(value) {
@@ -335,8 +725,11 @@ async function main() {
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);
   const aiEnvPath = path.resolve(__dirname, "..", "..", "ai-assistant", ".env");
+  const mysqlEnvPath = path.resolve(__dirname, "..", "..", "..", "servers", "mysql-docker", ".env");
   const envContent = await fs.readFile(aiEnvPath, "utf8");
   const env = parseEnvFile(envContent);
+  const mysqlEnvContent = await fs.readFile(mysqlEnvPath, "utf8").catch(() => "");
+  const mysqlEnv = parseEnvFile(mysqlEnvContent);
 
   const baseHost = normalizeLegacyHost(String(env.BASE_URL || DEFAULT_BASE_HOST).trim() || DEFAULT_BASE_HOST);
   const uploadUrl = ensureUrl(
@@ -348,8 +741,20 @@ async function main() {
   );
   const statusUrl = fileUploadUrl ? fileUploadUrl.replace(/\/file\/upload$/i, "/file/status") : "";
   const cancelSummaryUrl = fileUploadUrl ? fileUploadUrl.replace(/\/file\/upload$/i, "/file/cancel-summary") : "";
+  const fileBaseUrl = fileUploadUrl ? fileUploadUrl.replace(/\/file\/upload$/i, "") : "";
   const statusAuth = String(env.FILE_MICRO_SERVICE_AUTH || "").trim() ||
     (String(env.WEBHOOK_BEARER_TOKEN || "").trim() ? `Bearer ${String(env.WEBHOOK_BEARER_TOKEN || "").trim()}` : "");
+  const vectorEnabled = !["0", "false", "no"].includes(String(trimQuotes(env.BULK_UPLOADER_VECTORIZATION_ENABLED || "true")).toLowerCase());
+  const ollamaUrl = ensureUrl(trimQuotes(normalizeLegacyHost(env.OLLAMA_URL || DEFAULT_OLLAMA_URL)));
+  const ollamaModel = trimQuotes(env.OLLAMA_MODEL || DEFAULT_OLLAMA_MODEL) || DEFAULT_OLLAMA_MODEL;
+  const largeFileBytes = toInt(trimQuotes(env.LARGE_FILE_BYTES), DEFAULT_LARGE_FILE_BYTES);
+  const chunkBytes = toInt(trimQuotes(env.CHUNK_BYTES), DEFAULT_CHUNK_BYTES);
+  const mysqlHostRaw = trimQuotes(env.MYSQL_HOST || mysqlEnv.VECTORIZER_MYSQL_HOST || mysqlEnv.MYSQL_HOST || "127.0.0.1");
+  const mysqlHost = mysqlHostRaw === "%" ? "127.0.0.1" : mysqlHostRaw;
+  const mysqlPort = toInt(trimQuotes(env.MYSQL_PORT || mysqlEnv.MYSQL_PORT), 3306);
+  const mysqlDatabase = trimQuotes(env.MYSQL_DATABASE || mysqlEnv.MYSQL_DATABASE || "");
+  const mysqlUser = trimQuotes(env.MYSQL_USER || mysqlEnv.VECTORIZER_MYSQL_USER || mysqlEnv.MYSQL_USER || "");
+  const mysqlPassword = trimQuotes(env.MYSQL_PASSWORD || mysqlEnv.VECTORIZER_MYSQL_PASSWORD || mysqlEnv.MYSQL_PASSWORD || "");
 
   if (!uploadUrl) {
     throw new Error("unable to resolve AI assistant upload URL");
@@ -373,104 +778,149 @@ async function main() {
   console.log(`Upload endpoint: ${uploadUrl}`);
   console.log(`Status endpoint: ${statusUrl}`);
   console.log(`Cancel endpoint: ${cancelSummaryUrl}`);
+  console.log(`Vectorization: ${vectorEnabled ? "enabled" : "disabled"}`);
+  if (vectorEnabled) {
+    console.log(`Ollama: ${ollamaUrl} model=${ollamaModel}`);
+  }
   console.log(`Found ${discovered.length} supported files, processing ${selected.length}.`);
 
-  let successCount = 0;
-  let failedCount = 0;
-  let stopRequested = false;
-  let currentUpload = null;
-  const onInterrupt = async () => {
-    if (stopRequested) {
-      return;
-    }
-    stopRequested = true;
-    console.log("\nCancel requested. Stopping after current operation...");
-    if (currentUpload && (currentUpload.fileId || currentUpload.key)) {
-      await cancelSummaryJob(
-        cancelSummaryUrl,
-        statusAuth,
-        currentUpload.owner,
-        currentUpload.fileId,
-        currentUpload.key,
-      );
-    }
-  };
-  process.on("SIGINT", () => {
-    void onInterrupt();
-  });
-
-  for (let i = 0; i < selected.length; i += 1) {
-    if (stopRequested) {
-      console.log("\nStopped by user.");
-      break;
-    }
-    const fullPath = selected[i];
-    const display = path.basename(fullPath);
-    console.log(`\n[${i + 1}/${selected.length}] Uploading ${display}`);
-    try {
-      const uploaded = await uploadViaAssistant(uploadUrl, owner, fullPath);
-      currentUpload = {
-        owner,
-        fileId: uploaded.fileId,
-        key: uploaded.key,
-        display,
-      };
-      console.log(`Uploaded ${display} -> file_id=${uploaded.fileId ?? "unknown"}`);
-      if (uploaded.duplicate) {
-        console.log(`Detected duplicate record for ${display}.`);
-      }
-
-      if (!uploaded.summaryAsync && uploaded.summaryStatus && uploaded.summaryStatus !== "pending") {
-        console.log(`Completed ${display} (status=${uploaded.summaryStatus})`);
-        console.log(`Summary ${display}: ${uploaded.summary || "(no summary)"}`);
-        successCount += 1;
-        continue;
-      }
-
-      if (!uploaded.summaryAsync && uploaded.summaryStatus === "pending") {
-        console.log(`Skipping ${display}: status is pending but no async summary job was started.`);
-        console.log(`Summary ${display}: ${uploaded.summary || "(no summary)"}`);
-        successCount += 1;
-        continue;
-      }
-
-      const status = await pollFileCompletion(statusUrl, statusAuth, owner, uploaded.fileId, uploaded.key, display);
-      if (status.status === "completed" || status.status === "skipped") {
-        console.log(`Completed ${display} (status=${status.status})`);
-        console.log(`Summary ${display}: ${status.summary || "(no summary)"}`);
-        successCount += 1;
-        continue;
-      }
-      if (status.status === "deleted") {
-        console.log(`Completed ${display} (status=deleted)`);
-        console.log(`Summary ${display}: ${status.summary || "(no summary)"}`);
-        successCount += 1;
-        continue;
-      }
-
-      if (status.status === "failed") {
-        if (isNonFatalSummaryFailure(status.error)) {
-          console.log(`Skipped ${display} due to non-fatal summary issue: ${status.error}`);
-          console.log(`Summary ${display}: ${status.summary || "(no summary)"}`);
-          successCount += 1;
-          continue;
-        }
-        throw new Error(`processing failed for ${display}: ${status.error || "unknown error"}`);
-      }
-
-      console.log(`Finished ${display} with status=${status.status}`);
-      successCount += 1;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`ERROR: ${message}`);
-      failedCount += 1;
-    } finally {
-      currentUpload = null;
-    }
+  if (vectorEnabled && (!mysqlDatabase || !mysqlUser || !mysqlPassword)) {
+    throw new Error("vectorization enabled but MySQL config is missing (MYSQL_DATABASE, MYSQL_USER, MYSQL_PASSWORD)");
   }
 
-  console.log(`\nDone. Successfully processed ${successCount}/${selected.length}. Failed ${failedCount}.`);
-  process.exit(failedCount > 0 ? 1 : 0);
+  let vectorConnection = null;
+  try {
+    if (vectorEnabled) {
+      vectorConnection = await mysql.createConnection({
+        host: mysqlHost,
+        port: mysqlPort,
+        user: mysqlUser,
+        password: mysqlPassword,
+        database: mysqlDatabase,
+        charset: "utf8mb4",
+      });
+      await ensureVectorChunkTable(vectorConnection);
+    }
+
+    let successCount = 0;
+    let failedCount = 0;
+    let stopRequested = false;
+    let currentUpload = null;
+    const onInterrupt = async () => {
+      if (stopRequested) {
+        return;
+      }
+      stopRequested = true;
+      console.log("\nCancel requested. Stopping after current operation...");
+      if (currentUpload && (currentUpload.fileId || currentUpload.key)) {
+        await cancelSummaryJob(
+          cancelSummaryUrl,
+          statusAuth,
+          currentUpload.owner,
+          currentUpload.fileId,
+          currentUpload.key,
+        );
+      }
+    };
+    process.on("SIGINT", () => {
+      void onInterrupt();
+    });
+
+    for (let i = 0; i < selected.length; i += 1) {
+      if (stopRequested) {
+        console.log("\nStopped by user.");
+        break;
+      }
+      const fullPath = selected[i];
+      const display = path.basename(fullPath);
+      console.log(`\n[${i + 1}/${selected.length}] Uploading ${display}`);
+      try {
+        const uploaded = await uploadViaAssistant(uploadUrl, owner, fullPath);
+        currentUpload = {
+          owner,
+          fileId: uploaded.fileId,
+          key: uploaded.key,
+          display,
+        };
+        console.log(`Uploaded ${display} -> file_id=${uploaded.fileId ?? "unknown"}`);
+        if (uploaded.duplicate) {
+          console.log(`Detected duplicate record for ${display}.`);
+        }
+
+        let finalStatus = uploaded.summaryStatus || "";
+        let finalSummary = uploaded.summary || "";
+        let finalFilename = display;
+        let finalContentType = inferMimeType(display);
+        let canVectorize = uploaded.fileId && uploaded.fileId > 0;
+
+        if (!uploaded.summaryAsync && uploaded.summaryStatus && uploaded.summaryStatus !== "pending") {
+          // already finalized in upload response
+        } else if (!uploaded.summaryAsync && uploaded.summaryStatus === "pending") {
+          console.log(`Skipping ${display}: status is pending but no async summary job was started.`);
+        } else {
+          const status = await pollFileCompletion(statusUrl, statusAuth, owner, uploaded.fileId, uploaded.key, display);
+          finalStatus = status.status;
+          finalSummary = status.summary || "";
+          finalFilename = status.filename || finalFilename;
+          finalContentType = status.contentType || finalContentType;
+
+          if (status.status === "failed") {
+            if (isNonFatalSummaryFailure(status.error)) {
+              console.log(`Skipped ${display} due to non-fatal summary issue: ${status.error}`);
+            } else {
+              throw new Error(`processing failed for ${display}: ${status.error || "unknown error"}`);
+            }
+          }
+          if (status.status === "deleted") {
+            canVectorize = false;
+          }
+        }
+
+        console.log(`Completed ${display} (status=${finalStatus || "unknown"})`);
+        console.log(`Summary ${display}: ${finalSummary || "(no summary)"}`);
+
+        if (vectorEnabled) {
+          if (!canVectorize) {
+            console.log(`Vectorization skipped for ${display}: missing file_id or record deleted.`);
+          } else {
+            const vectorized = await vectorizeUploadedFile({
+              connection: vectorConnection,
+              fileBaseUrl,
+              statusAuth,
+              owner,
+              fileId: uploaded.fileId,
+              s3Key: uploaded.key,
+              filename: finalFilename || display,
+              contentType: finalContentType || inferMimeType(display),
+              summary: finalSummary || uploaded.summary || "",
+              model: ollamaModel,
+              ollamaUrl,
+              largeFileBytes,
+              chunkBytes,
+            });
+            console.log(
+              `Vectorized ${display}: chunks=${vectorized.chunkCount}, embedded=${vectorized.embedded}, skipped=${vectorized.skipped}.`,
+            );
+          }
+        }
+
+        successCount += 1;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`ERROR: ${message}`);
+        failedCount += 1;
+      } finally {
+        currentUpload = null;
+      }
+    }
+
+    console.log(`\nDone. Successfully processed ${successCount}/${selected.length}. Failed ${failedCount}.`);
+    process.exit(failedCount > 0 ? 1 : 0);
+  } finally {
+    if (vectorConnection) {
+      await vectorConnection.end();
+    }
+  }
 }
 
 main().catch((error) => {

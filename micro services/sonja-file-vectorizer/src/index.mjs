@@ -12,6 +12,7 @@ const DEFAULT_OWNER = "sonja";
 const DEFAULT_MODEL = "qwen3-embedding";
 const DEFAULT_LARGE_FILE_BYTES = 1024 * 1024;
 const DEFAULT_CHUNK_BYTES = 250 * 1024;
+const DEFAULT_EMBED_MAX_INPUT_CHARS = 12000;
 const HTTP_TIMEOUT_MS = 120_000;
 
 function usage() {
@@ -25,6 +26,7 @@ function usage() {
   console.log("  VECTOR_OWNER           default sonja");
   console.log("  LARGE_FILE_BYTES       default 1048576 (1MB)");
   console.log("  CHUNK_BYTES            default 256000 (250KB)");
+  console.log("  EMBED_MAX_INPUT_CHARS  default 12000");
   console.log("  MYSQL_HOST             default 127.0.0.1");
   console.log("  MYSQL_PORT             default 3306");
   console.log("  MYSQL_DATABASE         required");
@@ -331,6 +333,10 @@ async function resolveConfig() {
   const owner = String(process.env.VECTOR_OWNER || localEnv.VECTOR_OWNER || DEFAULT_OWNER).trim().toLowerCase() || DEFAULT_OWNER;
   const largeFileBytes = toInt(process.env.LARGE_FILE_BYTES || localEnv.LARGE_FILE_BYTES, DEFAULT_LARGE_FILE_BYTES);
   const chunkBytes = toInt(process.env.CHUNK_BYTES || localEnv.CHUNK_BYTES, DEFAULT_CHUNK_BYTES);
+  const embedMaxInputChars = toInt(
+    process.env.EMBED_MAX_INPUT_CHARS || localEnv.EMBED_MAX_INPUT_CHARS,
+    DEFAULT_EMBED_MAX_INPUT_CHARS,
+  );
 
   const mysqlHostRaw = String(
     process.env.MYSQL_HOST || localEnv.MYSQL_HOST || mysqlEnv.VECTORIZER_MYSQL_HOST || mysqlEnv.MYSQL_HOST || "127.0.0.1",
@@ -360,6 +366,7 @@ async function resolveConfig() {
     owner,
     largeFileBytes,
     chunkBytes,
+    embedMaxInputChars,
     mysqlHost,
     mysqlPort,
     mysqlDatabase,
@@ -426,6 +433,11 @@ async function embedChunk(config, payload) {
   });
   const raw = await response.text();
   if (!response.ok) {
+    if (response.status === 400 && /context length|input length exceeds/i.test(raw)) {
+      throw new Error(
+        `Ollama embed input too large for model context. Reduce CHUNK_BYTES/EMBED_MAX_INPUT_CHARS. Response: ${raw}`,
+      );
+    }
     throw new Error(`Ollama embed failed (${response.status}): ${raw}`);
   }
   let parsed = {};
@@ -633,6 +645,7 @@ async function main() {
   console.log(`Ollama: ${config.ollamaUrl} model=${config.model}`);
   console.log(`Owner: ${config.owner}`);
   console.log(`Chunk rule: >${config.largeFileBytes} bytes -> ${config.chunkBytes} byte chunks`);
+  console.log(`Embed max input chars: ${config.embedMaxInputChars}`);
 
   const files = await listSonjaFiles(config);
   const selected = options.limit > 0 ? files.slice(0, options.limit) : files;
@@ -677,8 +690,10 @@ async function main() {
       const downloaded = await downloadFile(config, fileId);
       const payloadBuffer = downloaded.buffer;
       const contentType = downloaded.contentType || baseContentType;
-      const shouldChunk = payloadBuffer.length > config.largeFileBytes;
-      const chunks = shouldChunk ? splitBuffer(payloadBuffer, config.chunkBytes) : [payloadBuffer];
+      const maxBytesByContext = Math.max(1024, Math.floor((config.embedMaxInputChars - 512) * 0.75));
+      const effectiveChunkBytes = Math.max(1024, Math.min(config.chunkBytes, maxBytesByContext));
+      const shouldChunk = payloadBuffer.length > Math.min(config.largeFileBytes, effectiveChunkBytes);
+      const chunks = shouldChunk ? splitBuffer(payloadBuffer, effectiveChunkBytes) : [payloadBuffer];
       const existingByChunk = await loadExistingChunkIndex(connection, config.owner, fileId, config.model);
 
       for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
