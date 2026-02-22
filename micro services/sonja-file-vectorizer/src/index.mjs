@@ -1013,7 +1013,6 @@ async function main() {
       const summary = String(file.summary || "");
       const s3Key = file.s3_key ? String(file.s3_key) : null;
       const baseContentType = String(file.content_type || "application/octet-stream");
-      const classified = await classifyMetadata(summary, filename, classifierCtx);
 
       console.log(`[${i + 1}/${selected.length}] ${filename} (id=${fileId})`);
       const downloaded = await downloadFile(config, fileId);
@@ -1024,10 +1023,23 @@ async function main() {
       const shouldChunk = payloadBuffer.length > Math.min(config.largeFileBytes, effectiveChunkBytes);
       const chunks = shouldChunk ? splitBuffer(payloadBuffer, effectiveChunkBytes) : [payloadBuffer];
       const existingByChunk = await loadExistingChunkIndex(connection, config.owner, fileId, config.model);
+      const chunkHashes = chunks.map((chunk) => createHash("sha256").update(chunk).digest("hex"));
+
+      // Fast path: if every chunk hash already matches, skip file completely (no classifier/LLM call).
+      const fileFullyUnchanged =
+        existingByChunk.size === chunks.length &&
+        chunkHashes.every((hash, idx) => existingByChunk.get(idx) === hash.toLowerCase());
+      if (fileFullyUnchanged) {
+        skippedChunks += chunks.length;
+        processedFiles += 1;
+        continue;
+      }
+
+      const classified = await classifyMetadata(summary, filename, classifierCtx);
 
       for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
         const chunk = chunks[chunkIndex];
-        const contentHash = createHash("sha256").update(chunk).digest("hex");
+        const contentHash = chunkHashes[chunkIndex];
         const metadataPayload = {
           owner: config.owner,
           fileId,
