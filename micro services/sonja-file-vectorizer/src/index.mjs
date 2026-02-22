@@ -217,10 +217,6 @@ function detectGrade(summary, filename) {
   if (filenameCandidates.length > 0) {
     return pickMostLikelyGrade(filenameCandidates);
   }
-  const summaryCandidates = extractGradeCandidates(summary);
-  if (summaryCandidates.length > 0) {
-    return pickMostLikelyGrade(summaryCandidates);
-  }
   return null;
 }
 
@@ -304,8 +300,7 @@ function mergeScores(a, b) {
 
 function detectSubject(summary, filename) {
   const fromFilename = scoreSubject(filename, 3);
-  const fromSummary = scoreSubject(summary, 2);
-  const combined = mergeScores(fromFilename, fromSummary);
+  const combined = mergeScores(fromFilename, new Map());
   let best = "unknown";
   let bestScore = 0;
   for (const [key, score] of combined.entries()) {
@@ -445,8 +440,9 @@ function isClassifierEnabled(value) {
 function buildClassifierPromptPayload(summary, filename, allowedSubjects) {
   return {
     filename: String(filename || ""),
-    summary: String(summary || ""),
+    summary: "",
     rules: {
+      classify_using_filename_only: true,
       grade_range: "1..10 only, else null",
       subject_must_be_one_of: allowedSubjects,
       educational_binary: "1=educational school content, 0=non-educational",
@@ -574,19 +570,19 @@ async function createClassifierContext(config) {
 }
 
 async function classifyMetadata(summary, filename, classifierCtx) {
-  let grade = detectGrade(summary, filename);
-  let subject = detectSubject(summary, filename);
-  let educational = parseEducational(summary, filename, grade, subject);
+  let grade = detectGrade("", filename);
+  let subject = detectSubject("", filename);
+  let educational = parseEducational("", filename, grade, subject);
   if (classifierCtx?.enabled) {
-    const predicted = await classifierCtx.classifyAll(summary, filename);
+    const predicted = await classifierCtx.classifyAll("", filename);
     if (subject === "unknown") {
-      const subjectPred = await classifierCtx.classifySubject(summary, filename);
+      const subjectPred = await classifierCtx.classifySubject("", filename);
       if (subjectPred.subject && subjectPred.subject !== "other") {
         subject = subjectPred.subject;
       }
     }
     if (grade === null) {
-      const gradePred = await classifierCtx.classifyGrade(summary, filename);
+      const gradePred = await classifierCtx.classifyGrade("", filename);
       if (gradePred.grade !== null) {
         grade = gradePred.grade;
       }
@@ -594,10 +590,10 @@ async function classifyMetadata(summary, filename, classifierCtx) {
     if (predicted && (predicted.educational === 0 || predicted.educational === 1)) {
       educational = predicted.educational;
     } else {
-      educational = parseEducational(summary, filename, grade, subject);
+      educational = parseEducational("", filename, grade, subject);
     }
   } else {
-    educational = parseEducational(summary, filename, grade, subject);
+    educational = parseEducational("", filename, grade, subject);
   }
   return { grade, subject, educational };
 }
