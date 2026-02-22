@@ -97,6 +97,14 @@ function parseGrade(text) {
   return Number.isFinite(grade) && grade >= 0 && grade <= 12 ? grade : null;
 }
 
+function detectGrade(summary, filename) {
+  const fromSummary = parseGrade(summary);
+  if (fromSummary !== null) {
+    return fromSummary;
+  }
+  return parseGrade(filename);
+}
+
 function parseSubject(text) {
   const v = String(text || "").toLowerCase();
   if (/\b(math|maths|mathematics|wiskunde|algebra|geometry|fractions?)\b/.test(v)) return "math";
@@ -108,6 +116,14 @@ function parseSubject(text) {
   if (/\b(technology|tegnologie)\b/.test(v)) return "technology";
   if (/\b(life orientation|lewensorientering)\b/.test(v)) return "life-orientation";
   return "unknown";
+}
+
+function detectSubject(summary, filename) {
+  const fromSummary = parseSubject(summary);
+  if (fromSummary !== "unknown") {
+    return fromSummary;
+  }
+  return parseSubject(filename);
 }
 
 function parseEducational(text, filename) {
@@ -367,8 +383,8 @@ async function main() {
       const summary = String(file.summary || "");
       const s3Key = file.s3_key ? String(file.s3_key) : null;
       const baseContentType = String(file.content_type || "application/octet-stream");
-      const grade = parseGrade(summary);
-      const subject = parseSubject(summary);
+      const grade = detectGrade(summary, filename);
+      const subject = detectSubject(summary, filename);
       const educational = parseEducational(summary, filename);
 
       console.log(`[${i + 1}/${selected.length}] ${filename} (id=${fileId})`);
