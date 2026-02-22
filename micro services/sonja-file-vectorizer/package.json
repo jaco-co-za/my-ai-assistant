@@ -8,6 +8,7 @@
   },
   "scripts": {
     "start": "node src/index.mjs",
+    "search": "node src/search.mjs",
     "build": "node -e \"console.log('sonja-file-vectorizer: no build step')\""
   },
   "dependencies": {

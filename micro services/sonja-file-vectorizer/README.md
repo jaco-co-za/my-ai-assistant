@@ -23,6 +23,17 @@ node src/index.mjs --dry-run
 node src/index.mjs --metadata-only
 ```
 
+## Fast Search (Optimized)
+
+Avoid heavy MySQL recursive vector math by searching in two phases:
+1. fetch candidate rows by filters/tokens
+2. cosine rank in Node.js
+
+```bash
+node src/search.mjs --query "bees" --top 20 --candidate-limit 2000
+node src/search.mjs --query "grade 1 maths addition" --grade 1 --subject math --educational 1 --top 20
+```
+
 ## Environment
 
 - `FILE_SERVICE_URL` (default `http://192.168.55.113:3224`)

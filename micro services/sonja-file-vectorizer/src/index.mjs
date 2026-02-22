@@ -318,24 +318,32 @@ async function loadEnvFromFile(filePath) {
 async function resolveConfig() {
   const here = path.dirname(new URL(import.meta.url).pathname);
   const repoRoot = path.resolve(here, "..", "..", "..");
+  const localEnv = await loadEnvFromFile(path.resolve(here, "..", ".env"));
   const fileEnv = await loadEnvFromFile(path.resolve(repoRoot, "micro services", "mservice-file", ".env"));
   const mysqlEnv = await loadEnvFromFile(path.resolve(repoRoot, "servers", "mysql-docker", ".env"));
 
-  const fileServiceUrl = String(process.env.FILE_SERVICE_URL || DEFAULT_FILE_SERVICE_URL).replace(/\/+$/, "");
+  const fileServiceUrl = String(process.env.FILE_SERVICE_URL || localEnv.FILE_SERVICE_URL || DEFAULT_FILE_SERVICE_URL).replace(/\/+$/, "");
   const fileServiceAuth = normalizeHeaderToken(
-    process.env.FILE_SERVICE_AUTH || fileEnv.AUTH_BEARER_TOKEN || fileEnv.FILE_MICRO_SERVICE_AUTH || "",
+    process.env.FILE_SERVICE_AUTH || localEnv.FILE_SERVICE_AUTH || fileEnv.AUTH_BEARER_TOKEN || fileEnv.FILE_MICRO_SERVICE_AUTH || "",
   );
-  const ollamaUrl = String(process.env.OLLAMA_URL || DEFAULT_OLLAMA_URL).replace(/\/+$/, "");
-  const model = String(process.env.OLLAMA_MODEL || DEFAULT_MODEL).trim() || DEFAULT_MODEL;
-  const owner = String(process.env.VECTOR_OWNER || DEFAULT_OWNER).trim().toLowerCase() || DEFAULT_OWNER;
-  const largeFileBytes = toInt(process.env.LARGE_FILE_BYTES, DEFAULT_LARGE_FILE_BYTES);
-  const chunkBytes = toInt(process.env.CHUNK_BYTES, DEFAULT_CHUNK_BYTES);
+  const ollamaUrl = String(process.env.OLLAMA_URL || localEnv.OLLAMA_URL || DEFAULT_OLLAMA_URL).replace(/\/+$/, "");
+  const model = String(process.env.OLLAMA_MODEL || localEnv.OLLAMA_MODEL || DEFAULT_MODEL).trim() || DEFAULT_MODEL;
+  const owner = String(process.env.VECTOR_OWNER || localEnv.VECTOR_OWNER || DEFAULT_OWNER).trim().toLowerCase() || DEFAULT_OWNER;
+  const largeFileBytes = toInt(process.env.LARGE_FILE_BYTES || localEnv.LARGE_FILE_BYTES, DEFAULT_LARGE_FILE_BYTES);
+  const chunkBytes = toInt(process.env.CHUNK_BYTES || localEnv.CHUNK_BYTES, DEFAULT_CHUNK_BYTES);
 
-  const mysqlHost = String(process.env.MYSQL_HOST || mysqlEnv.VECTORIZER_MYSQL_HOST || mysqlEnv.MYSQL_HOST || "127.0.0.1").trim();
-  const mysqlPort = toInt(process.env.MYSQL_PORT || mysqlEnv.MYSQL_PORT, 3306);
-  const mysqlDatabase = String(process.env.MYSQL_DATABASE || mysqlEnv.MYSQL_DATABASE || "").trim();
-  const mysqlUser = String(process.env.MYSQL_USER || mysqlEnv.VECTORIZER_MYSQL_USER || mysqlEnv.MYSQL_USER || "").trim();
-  const mysqlPassword = String(process.env.MYSQL_PASSWORD || mysqlEnv.VECTORIZER_MYSQL_PASSWORD || mysqlEnv.MYSQL_PASSWORD || "").trim();
+  const mysqlHostRaw = String(
+    process.env.MYSQL_HOST || localEnv.MYSQL_HOST || mysqlEnv.VECTORIZER_MYSQL_HOST || mysqlEnv.MYSQL_HOST || "127.0.0.1",
+  ).trim();
+  const mysqlHost = mysqlHostRaw === "%" ? "127.0.0.1" : mysqlHostRaw;
+  const mysqlPort = toInt(process.env.MYSQL_PORT || localEnv.MYSQL_PORT || mysqlEnv.MYSQL_PORT, 3306);
+  const mysqlDatabase = String(process.env.MYSQL_DATABASE || localEnv.MYSQL_DATABASE || mysqlEnv.MYSQL_DATABASE || "").trim();
+  const mysqlUser = String(
+    process.env.MYSQL_USER || localEnv.MYSQL_USER || mysqlEnv.VECTORIZER_MYSQL_USER || mysqlEnv.MYSQL_USER || "",
+  ).trim();
+  const mysqlPassword = String(
+    process.env.MYSQL_PASSWORD || localEnv.MYSQL_PASSWORD || mysqlEnv.VECTORIZER_MYSQL_PASSWORD || mysqlEnv.MYSQL_PASSWORD || "",
+  ).trim();
 
   if (!fileServiceAuth) {
     throw new Error("Missing FILE_SERVICE_AUTH (or AUTH_BEARER_TOKEN in micro services/mservice-file/.env)");
