@@ -1704,10 +1704,11 @@ async function runFileSearchQuery(args: {
   const isSonjaOwner = normalizeOwner(args.owner) === SONJA_OWNER;
   const dateConstraint = extractDateConstraintFromPrompt(args.prompt);
   if (isSonjaOwner) {
-    const summaryQuery = buildSummaryFallbackQuery(args.prompt, dateConstraint);
+    const sonjaPrompt = String(args.prompt || '').toLowerCase();
+    const summaryQuery = buildSummaryFallbackQuery(sonjaPrompt, dateConstraint);
     let rows = summaryQuery ? await args.dbCtx.dbAll(summaryQuery.sql, ...summaryQuery.params) : [];
     rows = await filterRowsForOwnerSearch({ owner: args.owner, rows, dbCtx: args.dbCtx });
-    rows = applyPromptTokenRelevanceFilter(rows, args.prompt);
+    rows = applyPromptTokenRelevanceFilter(rows, sonjaPrompt);
     const emptySql =
       'SELECT id, bucket, s3_key, filename, content_type, size_bytes, caption, summary, content_scope, summary_status, created_at ' +
       'FROM files WHERE 1=0';
@@ -1877,27 +1878,6 @@ async function refineSonjaSearchResults(args: {
 function wantsFileDelivery(prompt: string): boolean {
   const text = String(prompt || '').toLowerCase();
   return /\b(download|send|open|display|show)\b/.test(text) && /\b(file|pdf|document)\b/.test(text);
-}
-
-function isClarificationMessage(text: string): boolean {
-  const value = String(text || '').trim().toLowerCase();
-  if (!value) {
-    return false;
-  }
-  return (
-    /\b(clarify|clarification|specify|specific|more detail|which one|which file|what do you mean)\b/.test(value) ||
-    (/^\s*(please\s+)?(can you|could you|would you)\b/.test(value) && value.includes('?'))
-  );
-}
-
-function appendSonjaByeIfFinal(owner: string, message: string): string {
-  if (normalizeOwner(owner) !== SONJA_OWNER) {
-    return message;
-  }
-  if (isClarificationMessage(message)) {
-    return message;
-  }
-  return `${message}\n\nbye`;
 }
 
 function buildFileDownloadLink(req: Request, bucket: string, key: string): string {
@@ -2947,7 +2927,7 @@ app.post('/llm-query', authMiddleware, async (req, res) => {
         success: true,
         owner,
         type: 'attachment',
-        message: appendSonjaByeIfFinal(owner, baseMessage),
+        message: baseMessage,
         rows,
         attachments,
       });
@@ -2982,12 +2962,11 @@ app.post('/llm-query', authMiddleware, async (req, res) => {
           ...(summaryLines.length > 0 ? ['', ...summaryLines] : []),
         ].join('\n')
       : 'No matching files found.';
-    const finalMessage = appendSonjaByeIfFinal(owner, message);
     res.json({
       success: true,
       owner,
       type: 'message',
-      message: finalMessage,
+      message,
       rows,
       sql: effectiveSql,
       delivery,
