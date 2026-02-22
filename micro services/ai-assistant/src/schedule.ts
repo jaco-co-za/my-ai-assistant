@@ -112,6 +112,15 @@ export async function handleSchedule(
     break;
   }
 
+  if (extracted && action && (!verified || !verified.confirmed)) {
+    const hasSchedulableTime = (extracted.isRecurring && Boolean(extracted.cron)) || (!extracted.isRecurring && Boolean(extracted.runAt));
+    const reminderFallback = isReminderScheduleRequest(message) && hasSchedulableTime && Boolean(action.action);
+    if (reminderFallback) {
+      console.warn(`[schedule] verification override for reminder uuid=${uuid} reason="${lastProblem || "unconfirmed"}"`);
+      verified = { confirmed: true, contextRequired: false, raw: { override: "reminder-fallback" } };
+    }
+  }
+
   if (!extracted || !action || !verified || !verified.confirmed) {
     return { success: false, code: 400, msg: "Schedule could not be confirmed", uuid };
   }
