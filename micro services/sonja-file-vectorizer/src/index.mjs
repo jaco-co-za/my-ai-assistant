@@ -107,6 +107,24 @@ function splitBuffer(buffer, chunkBytes) {
   return chunks.length > 0 ? chunks : [Buffer.alloc(0)];
 }
 
+function buildChunkSizeAttempts(config) {
+  const maxBytesByContext = Math.max(1024, Math.floor((config.embedMaxInputChars - 512) * 0.75));
+  const first = Math.max(1024, Math.min(config.chunkBytes, maxBytesByContext));
+  const attempts = [first];
+  let current = first;
+  const minChunk = 4096;
+  while (current > minChunk) {
+    current = Math.max(minChunk, Math.floor(current / 2));
+    if (!attempts.includes(current)) {
+      attempts.push(current);
+    }
+    if (current === minChunk) {
+      break;
+    }
+  }
+  return attempts;
+}
+
 function normalizeClassifierText(value) {
   return String(value || "")
     .normalize("NFD")
@@ -770,6 +788,11 @@ async function embedChunk(config, payload) {
   throw new Error("Ollama embed response missing embedding array");
 }
 
+function isEmbedContextTooLargeError(error) {
+  const text = String(error instanceof Error ? error.message : error || "").toLowerCase();
+  return text.includes("input too large") || text.includes("exceeds the context length");
+}
+
 async function ensureChunkTable(connection) {
   await connection.execute(
     `CREATE TABLE IF NOT EXISTS sonja_file_embedding_chunks (
@@ -1041,6 +1064,7 @@ async function main() {
     let processedFiles = 0;
     let embeddedChunks = 0;
     let skippedChunks = 0;
+    const chunkSizeAttempts = buildChunkSizeAttempts(config);
 
     for (let i = 0; i < selected.length; i += 1) {
       const file = selected[i] || {};
@@ -1057,105 +1081,133 @@ async function main() {
       const downloaded = await downloadFile(config, fileId);
       const payloadBuffer = downloaded.buffer;
       const contentType = downloaded.contentType || baseContentType;
-      const maxBytesByContext = Math.max(1024, Math.floor((config.embedMaxInputChars - 512) * 0.75));
-      const effectiveChunkBytes = Math.max(1024, Math.min(config.chunkBytes, maxBytesByContext));
-      const shouldChunk = payloadBuffer.length > Math.min(config.largeFileBytes, effectiveChunkBytes);
-      const chunks = shouldChunk ? splitBuffer(payloadBuffer, effectiveChunkBytes) : [payloadBuffer];
-      const existingByChunk = await loadExistingChunkIndex(connection, config.owner, fileId, config.model);
-      const chunkHashes = chunks.map((chunk) => createHash("sha256").update(chunk).digest("hex"));
+      let classified = null;
+      let fileDone = false;
+      let lastAttemptError = null;
 
-      // Fast path: if every chunk hash already matches, skip file completely (no classifier/LLM call).
-      const fileFullyUnchanged =
-        existingByChunk.size === chunks.length &&
-        chunkHashes.every((hash, idx) => existingByChunk.get(idx) === hash.toLowerCase());
-      if (fileFullyUnchanged) {
-        if (config.verboseLogs) {
-          console.log(`[skip] unchanged file_id=${fileId} chunks=${chunks.length} (classifier/vector/sql skipped)`);
-        }
-        skippedChunks += chunks.length;
-        processedFiles += 1;
-        continue;
-      }
+      for (let attemptIdx = 0; attemptIdx < chunkSizeAttempts.length; attemptIdx += 1) {
+        const effectiveChunkBytes = chunkSizeAttempts[attemptIdx];
+        const shouldChunk = payloadBuffer.length > Math.min(config.largeFileBytes, effectiveChunkBytes);
+        const chunks = shouldChunk ? splitBuffer(payloadBuffer, effectiveChunkBytes) : [payloadBuffer];
+        const existingByChunk = await loadExistingChunkIndex(connection, config.owner, fileId, config.model);
+        const chunkHashes = chunks.map((chunk) => createHash("sha256").update(chunk).digest("hex"));
 
-      const classified = await classifyMetadata(summary, filename, classifierCtx);
-      if (config.verboseLogs) {
-        console.log(
-          `[classify] effective file_id=${fileId} grade=${classified.grade ?? "null"} subject=${classified.subject} educational=${classified.educational}`,
-        );
-      }
-
-      for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
-        const chunk = chunks[chunkIndex];
-        const contentHash = chunkHashes[chunkIndex];
-        const metadataPayload = {
-          owner: config.owner,
-          fileId,
-          chunkIndex,
-          chunkCount: chunks.length,
-          chunkSizeBytes: chunk.length,
-          s3Key,
-          filename,
-          contentType,
-          summary,
-          grade: classified.grade,
-          subject: classified.subject,
-          educational: classified.educational,
-          embeddingModel: config.model,
-          contentHash,
-          metadata: {
-            source: "sonja-file-vectorizer",
-            chunking_rule: {
-              large_file_bytes: config.largeFileBytes,
-              chunk_bytes: config.chunkBytes,
-            },
-          },
-          verboseLogs: config.verboseLogs,
-        };
-        const existingHash = existingByChunk.get(chunkIndex);
-        if (existingHash && existingHash === contentHash.toLowerCase()) {
-          if (!options.dryRun) {
-            await updateChunkMetadataOnly(connection, metadataPayload);
-          }
+        const fileFullyUnchanged =
+          existingByChunk.size === chunks.length &&
+          chunkHashes.every((hash, idx) => existingByChunk.get(idx) === hash.toLowerCase());
+        if (fileFullyUnchanged) {
           if (config.verboseLogs) {
             console.log(
-              `[vector] skip-embed file_id=${fileId} chunk=${chunkIndex}/${Math.max(0, chunks.length - 1)} reason=hash-match`,
+              `[skip] unchanged file_id=${fileId} chunks=${chunks.length} chunk_bytes=${effectiveChunkBytes} (classifier/vector/sql skipped)`,
             );
           }
-          skippedChunks += 1;
-          continue;
+          skippedChunks += chunks.length;
+          processedFiles += 1;
+          fileDone = true;
+          break;
         }
-        const chunkText = [
-          `owner=${config.owner}`,
-          `file_id=${fileId}`,
-          `filename=${filename}`,
-          `content_type=${contentType}`,
-          `chunk_index=${chunkIndex}`,
-          `chunk_count=${chunks.length}`,
-          `encoding=base64`,
-          `data=${chunk.toString("base64")}`,
-        ].join("\n");
-        const embedding = await embedChunk(config, chunkText);
-        if (!Array.isArray(embedding) || embedding.length === 0) {
-          throw new Error(`empty embedding for file_id=${fileId} chunk=${chunkIndex}`);
+
+        if (!classified) {
+          classified = await classifyMetadata(summary, filename, classifierCtx);
+          if (config.verboseLogs) {
+            console.log(
+              `[classify] effective file_id=${fileId} grade=${classified.grade ?? "null"} subject=${classified.subject} educational=${classified.educational}`,
+            );
+          }
         }
-        if (!options.dryRun) {
-          await upsertChunk(connection, {
-            ...metadataPayload,
-            embeddingDim: embedding.length,
-            embedding,
-          });
-        }
-        if (config.verboseLogs) {
+
+        try {
+          for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
+            const chunk = chunks[chunkIndex];
+            const contentHash = chunkHashes[chunkIndex];
+            const metadataPayload = {
+              owner: config.owner,
+              fileId,
+              chunkIndex,
+              chunkCount: chunks.length,
+              chunkSizeBytes: chunk.length,
+              s3Key,
+              filename,
+              contentType,
+              summary,
+              grade: classified.grade,
+              subject: classified.subject,
+              educational: classified.educational,
+              embeddingModel: config.model,
+              contentHash,
+              metadata: {
+                source: "sonja-file-vectorizer",
+                chunking_rule: {
+                  large_file_bytes: config.largeFileBytes,
+                  chunk_bytes: effectiveChunkBytes,
+                },
+              },
+              verboseLogs: config.verboseLogs,
+            };
+            const existingHash = existingByChunk.get(chunkIndex);
+            if (existingHash && existingHash === contentHash.toLowerCase()) {
+              if (!options.dryRun) {
+                await updateChunkMetadataOnly(connection, metadataPayload);
+              }
+              if (config.verboseLogs) {
+                console.log(
+                  `[vector] skip-embed file_id=${fileId} chunk=${chunkIndex}/${Math.max(0, chunks.length - 1)} reason=hash-match`,
+                );
+              }
+              skippedChunks += 1;
+              continue;
+            }
+            const chunkText = [
+              `owner=${config.owner}`,
+              `file_id=${fileId}`,
+              `filename=${filename}`,
+              `content_type=${contentType}`,
+              `chunk_index=${chunkIndex}`,
+              `chunk_count=${chunks.length}`,
+              `encoding=base64`,
+              `data=${chunk.toString("base64")}`,
+            ].join("\n");
+            const embedding = await embedChunk(config, chunkText);
+            if (!Array.isArray(embedding) || embedding.length === 0) {
+              throw new Error(`empty embedding for file_id=${fileId} chunk=${chunkIndex}`);
+            }
+            if (!options.dryRun) {
+              await upsertChunk(connection, {
+                ...metadataPayload,
+                embeddingDim: embedding.length,
+                embedding,
+              });
+            }
+            if (config.verboseLogs) {
+              console.log(
+                `[vector] stored file_id=${fileId} chunk=${chunkIndex}/${Math.max(0, chunks.length - 1)} dim=${embedding.length}`,
+              );
+            }
+            embeddedChunks += 1;
+          }
+
+          if (!options.dryRun) {
+            await deleteStaleChunks(connection, config.owner, fileId, config.model, chunks.length);
+          }
+          processedFiles += 1;
+          fileDone = true;
+          break;
+        } catch (error) {
+          lastAttemptError = error;
+          const canRetrySmaller = isEmbedContextTooLargeError(error) && attemptIdx < chunkSizeAttempts.length - 1;
+          if (!canRetrySmaller) {
+            throw error;
+          }
+          const nextChunkBytes = chunkSizeAttempts[attemptIdx + 1];
           console.log(
-            `[vector] stored file_id=${fileId} chunk=${chunkIndex}/${Math.max(0, chunks.length - 1)} dim=${embedding.length}`,
+            `[vector] context-limit file_id=${fileId} chunk_bytes=${effectiveChunkBytes} -> retry with chunk_bytes=${nextChunkBytes}`,
           );
         }
-        embeddedChunks += 1;
       }
-      if (!options.dryRun) {
-        await deleteStaleChunks(connection, config.owner, fileId, config.model, chunks.length);
+
+      if (!fileDone && lastAttemptError) {
+        throw lastAttemptError;
       }
-      processedFiles += 1;
     }
 
     console.log(
