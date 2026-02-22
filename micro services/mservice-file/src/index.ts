@@ -65,6 +65,13 @@ const FILE_QUERY_ASSISTANT_RETRY_DELAY_MS = Number.parseInt(process.env.FILE_QUE
 const FILE_QUERY_USE_ASSISTANT = String(process.env.FILE_QUERY_USE_ASSISTANT || 'false').toLowerCase() === 'true';
 const SONJA_REFINEMENT_ENABLED = String(process.env.SONJA_REFINEMENT_ENABLED || 'true').toLowerCase() === 'true';
 const SONJA_STRICT_LLM_COMPLETION = String(process.env.SONJA_STRICT_LLM_COMPLETION || 'true').toLowerCase() === 'true';
+const SONJA_KEYWORD_MODEL = (process.env.SONJA_KEYWORD_MODEL || 'qwen2.5:7b').trim();
+const SONJA_MATCH_MODEL = (process.env.SONJA_MATCH_MODEL || 'qwen2.5:7b').trim();
+const SONJA_MATCH_CONFIDENCE = Number.parseInt(process.env.SONJA_MATCH_CONFIDENCE || '75', 10);
+const SONJA_SEARCH_BATCH_SIZE = Math.max(1, Number.parseInt(process.env.SONJA_SEARCH_BATCH_SIZE || '5', 10));
+const SONJA_SEARCH_TARGET_MATCHES = Math.max(1, Number.parseInt(process.env.SONJA_SEARCH_TARGET_MATCHES || '3', 10));
+const SONJA_SEARCH_MAX_MATCHES = Math.max(SONJA_SEARCH_TARGET_MATCHES, Number.parseInt(process.env.SONJA_SEARCH_MAX_MATCHES || '5', 10));
+const SONJA_SEARCH_MAX_SCAN_ROWS = Math.max(SONJA_SEARCH_BATCH_SIZE, Number.parseInt(process.env.SONJA_SEARCH_MAX_SCAN_ROWS || '200', 10));
 const SONJA_EMBEDDING_SEARCH_ENABLED = String(process.env.SONJA_EMBEDDING_SEARCH_ENABLED || 'true').toLowerCase() !== 'false';
 const SONJA_EMBEDDING_OLLAMA_URL = (process.env.SONJA_EMBEDDING_OLLAMA_URL || process.env.OLLAMA_URL || 'http://192.168.55.73:11434')
   .trim()
@@ -262,7 +269,11 @@ function stripSonjaPromptPrefix(prompt: string): string {
   if (!text) {
     return '';
   }
-  return text.replace(/^\s*sonja\s+files?\b[:\s-]*/i, '').trim();
+  return text
+    .replace(/\bsonja\b/gi, ' ')
+    .replace(/\bfiles?\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function resolveDbPath(owner: string): string {
@@ -1100,6 +1111,255 @@ async function sendSonjaReviewRequestToAssistant(payload: Record<string, unknown
   return null;
 }
 
+async function sendSonjaJsonRequestToAssistant(args: {
+  model: string;
+  system: string;
+  user: string;
+  temperature?: number;
+}): Promise<Record<string, unknown> | null> {
+  if (!ASSISTANT_URL) {
+    return null;
+  }
+  const authorizationHeader = ASSISTANT_AUTH ? `Bearer ${ASSISTANT_AUTH}` : '';
+  const url = ASSISTANT_URL.match(/^https?:\/\//i) ? ASSISTANT_URL : `http://${ASSISTANT_URL}`;
+  const timeoutMs = Number.isFinite(FILE_QUERY_ASSISTANT_TIMEOUT_MS) && FILE_QUERY_ASSISTANT_TIMEOUT_MS > 0
+    ? FILE_QUERY_ASSISTANT_TIMEOUT_MS
+    : 30000;
+  const retries = Number.isFinite(FILE_QUERY_ASSISTANT_RETRIES) ? Math.max(0, FILE_QUERY_ASSISTANT_RETRIES) : 0;
+  const retryDelayMs =
+    Number.isFinite(FILE_QUERY_ASSISTANT_RETRY_DELAY_MS) && FILE_QUERY_ASSISTANT_RETRY_DELAY_MS > 0
+      ? FILE_QUERY_ASSISTANT_RETRY_DELAY_MS
+      : 1200;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const messagePayload = {
+        Authorization: ASSISTANT_AUTH,
+        authorization: ASSISTANT_AUTH,
+        model: args.model,
+        messages: [
+          { role: 'system', content: args.system },
+          { role: 'user', content: args.user },
+        ],
+        temperature: Number.isFinite(args.temperature) ? args.temperature : 0.1,
+        stream: false,
+        format: 'json',
+      };
+      const requestBody = {
+        from: 'custom-prompt',
+        message: JSON.stringify(messagePayload),
+      };
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          ...(authorizationHeader ? { Authorization: authorizationHeader } : {}),
+        },
+        body: JSON.stringify(requestBody),
+        signal: controller.signal,
+      });
+      const raw = await response.text();
+      if (!response.ok) {
+        if (attempt < retries) {
+          await sleep(retryDelayMs);
+          continue;
+        }
+        return null;
+      }
+      const parsed = parseAssistantJsonContent(raw);
+      if (!parsed) {
+        if (attempt < retries) {
+          await sleep(retryDelayMs);
+          continue;
+        }
+        return null;
+      }
+      return parsed;
+    } catch {
+      if (attempt < retries) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return null;
+}
+
+function extractLanguageConstraintsFromPrompt(prompt: string): string[] {
+  const text = String(prompt || '').toLowerCase();
+  if (!text) {
+    return [];
+  }
+  const patterns: Array<{ key: string; rx: RegExp }> = [
+    { key: 'afrikaans', rx: /\bafrikaans\b/i },
+    { key: 'english', rx: /\benglish\b/i },
+    { key: 'isizulu', rx: /\bisizulu\b|\bzulu\b/i },
+    { key: 'isixhosa', rx: /\bisixhosa\b|\bxhosa\b/i },
+    { key: 'sepedi', rx: /\bsepedi\b|\bnorthern sotho\b/i },
+    { key: 'setswana', rx: /\bsetswana\b|\btswana\b/i },
+    { key: 'sesotho', rx: /\bsesotho\b/i },
+    { key: 'xitsonga', rx: /\bxitsonga\b|\btsonga\b/i },
+    { key: 'tshivenda', rx: /\btshivenda\b|\bvenda\b/i },
+    { key: 'siswati', rx: /\bsiswati\b|\bswati\b/i },
+    { key: 'isindebele', rx: /\bisindebele\b|\bndebele\b/i },
+  ];
+  return patterns.filter((item) => item.rx.test(text)).map((item) => item.key);
+}
+
+async function extractSonjaSearchKeywords(prompt: string): Promise<string[]> {
+  const fallback = extractPromptSearchTokens(prompt).slice(0, 8);
+  const parsed = await sendSonjaJsonRequestToAssistant({
+    model: SONJA_KEYWORD_MODEL,
+    system:
+      'Extract core searchable keywords from a user file query. Exclude adjectives/filler words. Return ONLY JSON: {"keywords":["..."]}.',
+    user: JSON.stringify({
+      prompt,
+      rules: [
+        'Keep only nouns/key topics/grade/subject/language tokens.',
+        'Exclude adjectives, greetings, and filler.',
+        'Do not include "sonja", "file", or "files".',
+        'Return 3-8 keywords.',
+      ],
+    }),
+    temperature: 0,
+  });
+  const raw = Array.isArray(parsed?.keywords) ? parsed?.keywords : [];
+  const cleaned = raw
+    .map((value) => String(value || '').trim().toLowerCase())
+    .filter((value) => value.length >= 2)
+    .map((value) => value.replace(/\s+/g, ' '))
+    .filter((value) => value !== 'sonja' && value !== 'file' && value !== 'files');
+  const unique = Array.from(new Set(cleaned));
+  if (unique.length > 0) {
+    return unique.slice(0, 8);
+  }
+  return fallback;
+}
+
+async function scoreSonjaCandidateMatch(args: {
+  prompt: string;
+  summary: string;
+  filename: string;
+  gradeConstraints: number[];
+  subjectConstraints: string[];
+  languageConstraints: string[];
+}): Promise<{ score: number; matched: boolean; reason: string }> {
+  const parsed = await sendSonjaJsonRequestToAssistant({
+    model: SONJA_MATCH_MODEL,
+    system:
+      'You score how well a file summary matches a user query. Return ONLY JSON: {"score":0-100 integer,"matched":boolean,"reason":"short"}',
+    user: JSON.stringify({
+      user_prompt: args.prompt,
+      candidate: {
+        filename: args.filename,
+        summary: trimForSummary(args.summary, 4000),
+      },
+      constraints: {
+        grade: args.gradeConstraints,
+        subject: args.subjectConstraints,
+        language: args.languageConstraints,
+      },
+      rules: [
+        'If grade constraints are present, do not match if grade intent conflicts.',
+        'If subject constraints are present, do not match if subject intent conflicts.',
+        'If language constraints are present, do not match if language intent conflicts.',
+      ],
+    }),
+    temperature: 0.05,
+  });
+  const score = normalizeConfidence(parsed?.score);
+  const matched = Boolean(parsed?.matched) && score >= SONJA_MATCH_CONFIDENCE;
+  const reason = String(parsed?.reason || '').trim();
+  return { score, matched, reason };
+}
+
+async function runSonjaSummaryIterativeSearch(args: {
+  prompt: string;
+  owner: string;
+  dbCtx: DbContext;
+  dateConstraint: DateConstraint | null;
+}): Promise<{ rows: any[]; effectiveSql: string }> {
+  const normalizedOwner = normalizeOwner(args.owner);
+  const keywords = await extractSonjaSearchKeywords(args.prompt);
+  const gradeConstraints = parseGradeNumbersFromText(args.prompt);
+  const subjectConstraints = parseSubjectFiltersFromPrompt(args.prompt);
+  const languageConstraints = extractLanguageConstraintsFromPrompt(args.prompt);
+  const selected = new Map<number, { row: any; score: number; reason: string }>();
+  let scanned = 0;
+  let cursorId: number | null = null;
+  const sqlParts: string[] = [];
+
+  while (scanned < SONJA_SEARCH_MAX_SCAN_ROWS && selected.size < SONJA_SEARCH_TARGET_MATCHES) {
+    const clauses: string[] = ["COALESCE(content_scope,'business') <> 'personal'", "TRIM(COALESCE(summary,'')) <> ''"];
+    const params: unknown[] = [];
+    if (cursorId !== null) {
+      clauses.push('id < ?');
+      params.push(cursorId);
+    }
+    if (keywords.length > 0) {
+      const keywordClauses: string[] = [];
+      for (const keyword of keywords) {
+        keywordClauses.push('LOWER(COALESCE(summary,\'\')) LIKE ?');
+        params.push(tokenToLikePattern(keyword));
+      }
+      clauses.push(`(${keywordClauses.join(' OR ')})`);
+    }
+    if (args.dateConstraint) {
+      clauses.push(`(${args.dateConstraint.clause})`);
+      params.push(...args.dateConstraint.params);
+    }
+    params.push(SONJA_SEARCH_BATCH_SIZE);
+    const sql =
+      'SELECT id, bucket, s3_key, filename, content_type, size_bytes, caption, summary, content_scope, summary_status, created_at ' +
+      `FROM files WHERE ${clauses.join(' AND ')} ORDER BY id DESC LIMIT ?`;
+    const batch = await args.dbCtx.dbAll(sql, ...params);
+    sqlParts.push(sql);
+    if (!Array.isArray(batch) || batch.length === 0) {
+      break;
+    }
+    scanned += batch.length;
+    cursorId = Number(batch[batch.length - 1]?.id || 0);
+
+    for (const row of batch) {
+      const id = Number(row?.id);
+      if (!Number.isFinite(id) || id <= 0 || selected.has(id)) {
+        continue;
+      }
+      const summary = String(row?.summary || '').trim();
+      if (!summary) {
+        continue;
+      }
+      const scored = await scoreSonjaCandidateMatch({
+        prompt: args.prompt,
+        summary,
+        filename: String(row?.filename || ''),
+        gradeConstraints,
+        subjectConstraints,
+        languageConstraints,
+      });
+      if (!scored.matched) {
+        continue;
+      }
+      selected.set(id, { row: { ...row, content_scope: 'business' }, score: scored.score, reason: scored.reason });
+      if (selected.size >= SONJA_SEARCH_MAX_MATCHES) {
+        break;
+      }
+    }
+  }
+
+  const rows = Array.from(selected.values())
+    .sort((a, b) => b.score - a.score)
+    .slice(0, SONJA_SEARCH_MAX_MATCHES)
+    .map((item) => item.row);
+  const debugSql = `/* sonja iterative summary search keywords=${JSON.stringify(keywords)} scanned=${scanned} selected=${rows.length} */ ${sqlParts.join(' ; ')}`;
+  return { rows: await filterRowsForOwnerSearch({ owner: normalizedOwner, rows, dbCtx: args.dbCtx }), effectiveSql: debugSql };
+}
+
 async function reviewSonjaRowsAgainstPrompt(args: {
   originalPrompt: string;
   currentPrompt: string;
@@ -1932,45 +2192,14 @@ async function runFileSearchQuery(args: {
   const dateConstraint = extractDateConstraintFromPrompt(args.prompt);
   if (isSonjaOwner) {
     const sonjaPrompt = String(args.prompt || '').trim();
-    const embedded = await runSonjaEmbeddingSearch({ prompt: sonjaPrompt, owner: args.owner }).catch(() => ({
-      ids: [] as number[],
-      debugSql: '/* sonja embedding search failed */',
-    }));
-    if (embedded.ids.length > 0) {
-      const placeholders = embedded.ids.map(() => '?').join(',');
-      const rowsById = await args.dbCtx.dbAll(
-        `SELECT id, bucket, s3_key, filename, content_type, size_bytes, caption, summary, content_scope, summary_status, created_at
-         FROM files
-         WHERE id IN (${placeholders});`,
-        ...embedded.ids,
-      );
-      let rows = await filterRowsForOwnerSearch({ owner: args.owner, rows: rowsById, dbCtx: args.dbCtx });
-      const order = new Map<number, number>();
-      embedded.ids.forEach((id, index) => order.set(id, index));
-      rows.sort((a, b) => {
-        const ai = order.get(Number(a?.id)) ?? Number.MAX_SAFE_INTEGER;
-        const bi = order.get(Number(b?.id)) ?? Number.MAX_SAFE_INTEGER;
-        return ai - bi;
-      });
-      const delivery = wantsFileDelivery(args.prompt) ? 'attach' : 'none';
-      return {
-        rows,
-        effectiveSql: `${embedded.debugSql} /* sonja embedding search */`,
-        delivery,
-        searchMode: 'embedding',
-      };
-    }
-
-    const summaryQuery = buildSummaryFallbackQuery(sonjaPrompt.toLowerCase(), dateConstraint);
-    let rows = summaryQuery ? await args.dbCtx.dbAll(summaryQuery.sql, ...summaryQuery.params) : [];
-    rows = await filterRowsForOwnerSearch({ owner: args.owner, rows, dbCtx: args.dbCtx });
-    rows = applyPromptTokenRelevanceFilter(rows, sonjaPrompt);
-    const emptySql =
-      'SELECT id, bucket, s3_key, filename, content_type, size_bytes, caption, summary, content_scope, summary_status, created_at ' +
-      'FROM files WHERE 1=0';
-    const effectiveSql = `${summaryQuery?.sql || emptySql} /* sonja summary-like search fallback */`;
+    const iterative = await runSonjaSummaryIterativeSearch({
+      prompt: sonjaPrompt,
+      owner: args.owner,
+      dbCtx: args.dbCtx,
+      dateConstraint,
+    });
     const delivery = wantsFileDelivery(args.prompt) ? 'attach' : 'none';
-    return { rows, effectiveSql, delivery, searchMode: 'summary-like' };
+    return { rows: iterative.rows, effectiveSql: iterative.effectiveSql, delivery, searchMode: 'summary-like' };
   }
 
   const planPayload = {
