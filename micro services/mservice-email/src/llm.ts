@@ -4759,7 +4759,6 @@ export function createLlmHandler({
         };
       }
 
-      const lowConfidence = decision.confidence < 0.8;
       const hasFolderChoice = Boolean(decision.folder_path);
       const suggestedLeaf = sanitizeSubfolderName(String(decision.suggested_new_subfolder || ''));
       const fallbackLeaf = sanitizeSubfolderName(String(emailRow?.subject || '').split(/\s+/).slice(0, 3).join('-'));
@@ -4770,16 +4769,17 @@ export function createLlmHandler({
             ? fallbackLeaf
             : 'auto-classified';
       const suggestedPath = `INBOX.${chosenLeaf}`;
+      const lowConfidence = decision.confidence < 0.8;
+      const selectedTarget = hasFolderChoice ? (decision.folder_path as string) : suggestedPath;
 
-      if (lowConfidence && !skipConfirmation) {
-        const previewTarget = hasFolderChoice ? decision.folder_path : suggestedPath;
+      if (!skipConfirmation) {
         const reason = decision.reason ? ` Reason: ${decision.reason}` : '';
         return {
           success: true,
           confirm: true,
           type: 'message',
           message:
-            `Auto classify suggests moving email ${emailId} to "${previewTarget}" ` +
+            `Auto classify suggests moving email ${emailId} to "${selectedTarget}" ` +
             `(confidence ${decision.confidence.toFixed(2)}).` +
             (lowConfidence ? ` Confidence is low, suggested new subfolder: "${suggestedPath}".` : '') +
             `${reason} Confirm?`,
