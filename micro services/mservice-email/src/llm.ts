@@ -4286,8 +4286,14 @@ export function createLlmHandler({
       }
       try {
       let request = extractReplyMailRequest(prompt);
-      const replyExtractPrompt = buildReplyExtractPrompt(requestPayload);
-      const replyExtractRaw = await sendToAssistant(replyExtractPrompt, { model: 'qwen2.5-coder:14b' });
+      let replyExtractRaw: string | null = null;
+      try {
+        const replyExtractPrompt = buildReplyExtractPrompt(requestPayload);
+        replyExtractRaw = await sendToAssistant(replyExtractPrompt, { model: 'qwen2.5-coder:14b' });
+      } catch (err: any) {
+        // eslint-disable-next-line no-console
+        console.log('Reply extract assistant failed ->', err?.message || String(err));
+      }
       const replyExtract = replyExtractRaw ? parseReplyExtract(replyExtractRaw) : null;
       if (replyExtract) {
         if (replyExtract.mode === 'by_id' && replyExtract.email_id) {
@@ -4339,8 +4345,14 @@ export function createLlmHandler({
       const missingSubject = !request.subject || request.subject.trim().length === 0;
       let missingBody = !request.body || request.body.trim().length === 0;
       if (missingBody) {
-        const derivePrompt = buildReplyBodyDerivePrompt(requestPayload);
-        const deriveRaw = await sendToAssistant(derivePrompt, { model: 'qwen2.5-coder:14b' });
+        let deriveRaw: string | null = null;
+        try {
+          const derivePrompt = buildReplyBodyDerivePrompt(requestPayload);
+          deriveRaw = await sendToAssistant(derivePrompt, { model: 'qwen2.5-coder:14b' });
+        } catch (err: any) {
+          // eslint-disable-next-line no-console
+          console.log('Reply body derive assistant failed ->', err?.message || String(err));
+        }
         const derived = deriveRaw ? parseReplyBodyDerive(deriveRaw) : null;
         if (derived?.body && derived.body.length > 0) {
           request.body = derived.body;
