@@ -1860,6 +1860,7 @@
             emailViewerReplyButton.disabled = total === 0 || emailViewerQueueIndex < 0 || emailViewerQueueIndex >= total;
             emailViewerMoveTopayButton.disabled = total === 0 || emailViewerQueueIndex < 0 || emailViewerQueueIndex >= total;
             emailViewerRemoveButton.disabled = total === 0 || emailViewerQueueIndex < 0;
+            updateMoveButtonState();
           }
 
           function prefillReplyForCurrentEmail() {
@@ -1878,7 +1879,47 @@
             pushEvent("prefill", `reply to mail id ${Math.floor(emailId)} with body`);
           }
 
-          function moveCurrentEmailToTopay() {
+          function isEmailInNamedFolder(card, folderName) {
+            if (!card || typeof card !== "object") {
+              return false;
+            }
+            const target = String(folderName || "").trim().toLowerCase();
+            if (!target) {
+              return false;
+            }
+            const folder = String(card.folder || "").trim().toLowerCase();
+            const subfolder = String(card.subfolder || "").trim().toLowerCase();
+            return (
+              folder === target ||
+              subfolder === target ||
+              folder.endsWith("." + target) ||
+              subfolder.endsWith("." + target)
+            );
+          }
+
+          function getMoveTargetForCard(card) {
+            if (isEmailInNamedFolder(card, "topay")) {
+              return { label: "Move to Paid", targetFolderPath: "INBOX.paid", targetLeaf: "paid" };
+            }
+            return { label: "Move to Topay", targetFolderPath: "INBOX.topay", targetLeaf: "topay" };
+          }
+
+          function updateMoveButtonState() {
+            if (!emailViewerMoveTopayButton) {
+              return;
+            }
+            if (emailViewerQueue.length === 0 || emailViewerQueueIndex < 0 || emailViewerQueueIndex >= emailViewerQueue.length) {
+              emailViewerMoveTopayButton.textContent = "Move to Topay";
+              emailViewerMoveTopayButton.setAttribute("aria-label", "Move this email to INBOX.topay");
+              return;
+            }
+            const card = emailViewerQueue[emailViewerQueueIndex];
+            const target = getMoveTargetForCard(card);
+            emailViewerMoveTopayButton.textContent = target.label;
+            emailViewerMoveTopayButton.setAttribute("aria-label", `${target.label} for this email`);
+          }
+
+          function moveCurrentEmailByFolderState() {
             if (emailViewerQueue.length === 0 || emailViewerQueueIndex < 0 || emailViewerQueueIndex >= emailViewerQueue.length) {
               renderEmailViewerQueueNav();
               return;
@@ -1893,9 +1934,10 @@
               pushEvent("email-viewer", "socket not connected");
               return;
             }
-            const command = `move email ${Math.floor(emailId)} to INBOX.topay`;
+            const target = getMoveTargetForCard(card);
+            const command = `move email ${Math.floor(emailId)} to ${target.targetFolderPath}`;
             card.folder = "INBOX";
-            card.subfolder = "topay";
+            card.subfolder = target.targetLeaf;
             persistEmailViewerQueue();
             renderCurrentEmailViewerEntry();
             setWaiting("email move");
@@ -1907,7 +1949,7 @@
                 skipCache: true,
               }),
             );
-            pushEvent("email-viewer", `move requested: email ${Math.floor(emailId)} -> INBOX.topay`);
+            pushEvent("email-viewer", `move requested: email ${Math.floor(emailId)} -> ${target.targetFolderPath}`);
           }
 
           function persistEmailViewerQueue() {
@@ -3682,7 +3724,7 @@
           });
 
           emailViewerMoveTopayButton.addEventListener("click", function () {
-            moveCurrentEmailToTopay();
+            moveCurrentEmailByFolderState();
           });
 
           openAiApiToggle.addEventListener("click", function () {
