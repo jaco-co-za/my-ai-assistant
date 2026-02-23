@@ -5117,12 +5117,33 @@ export function createLlmHandler({
         : `WHERE email_messages.received_at IS NOT NULL `;
       let directWhereWithFolder = directWhere;
       if (folderHintDirect) {
+        const folder = folderHintDirect.toLowerCase();
+        if (folder === 'inbox') {
+          directWhereWithFolder +=
+            `AND (` +
+            `LOWER(folders.path) = 'inbox' OR LOWER(folders.path) = 'inbox.inbox'` +
+            `) `;
+        } else if (folder === 'sent') {
+          directWhereWithFolder +=
+            `AND (` +
+            `LOWER(folders.path) = 'sent' OR LOWER(folders.path) = 'inbox.sent'` +
+            `) `;
+        } else if (folder === 'topay') {
+          directWhereWithFolder +=
+            `AND (` +
+            `LOWER(folders.path) = 'topay' OR LOWER(folders.path) = 'inbox.topay' OR LOWER(folders.path) LIKE 'inbox.topay.%'` +
+            `) `;
+        } else {
+          directWhereWithFolder +=
+            `AND (` +
+            `LOWER(folders.name) = ? OR LOWER(folders.path) = ? OR LOWER(folders.path) LIKE ?` +
+            `) `;
+        }
+      } else {
         directWhereWithFolder +=
           `AND (` +
-          `LOWER(folders.name) = ? OR LOWER(folders.path) = ? OR LOWER(folders.path) LIKE ?` +
+          `LOWER(folders.path) = 'inbox' OR LOWER(folders.path) = 'inbox.inbox'` +
           `) `;
-      } else {
-        directWhereWithFolder += `AND LOWER(folders.path) = 'inbox.inbox' `;
       }
       const directWhereWithDate = (todayMyMails || weekdayRange)
         ? `${directWhereWithFolder}AND email_messages.received_at >= ? AND email_messages.received_at < ? `
@@ -5136,7 +5157,9 @@ export function createLlmHandler({
       }
       if (folderHintDirect) {
         const folder = folderHintDirect.toLowerCase();
-        directRowsParams.push(folder, folder, `%${folder}%`);
+        if (folder !== 'inbox' && folder !== 'sent' && folder !== 'topay') {
+          directRowsParams.push(folder, folder, `%${folder}%`);
+        }
       }
       if (todayMyMails) {
         directRowsParams.push(startOfLocalDay.toISOString(), startOfNextLocalDay.toISOString());
