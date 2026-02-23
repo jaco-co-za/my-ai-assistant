@@ -222,6 +222,13 @@ type BlockSenderMatch = {
   matches: string[];
 };
 
+type AutoClassifyDecision = {
+  folder_path: string | null;
+  confidence: number;
+  reason: string;
+  suggested_new_subfolder: string | null;
+};
+
 type AttachmentCandidate = {
   attachment_id: number;
   email_id: number;
@@ -670,12 +677,45 @@ function isMoveMailRequest(prompt: string): boolean {
   return hasMove && hasMail && hasTarget;
 }
 
+function isAutoClassifyRequest(prompt: string): boolean {
+  const text = prompt.toLowerCase();
+  const hasAuto = /\b(auto|automatically)\b/.test(text);
+  const hasClassify = /\b(classify|categori[sz]e|sort)\b/.test(text);
+  const hasMail = /\b(mail|email|message)\b/.test(text);
+  return hasAuto && hasClassify && hasMail;
+}
+
 function extractMoveFolder(prompt: string): string | null {
   const explicit = prompt.match(/\bto\s+([a-z0-9_.-]+)\b/i);
   if (!explicit?.[1]) {
     return null;
   }
   return String(explicit[1]).trim();
+}
+
+function extractAutoClassifyEmailId(prompt: string): number | null {
+  const byPhrase = prompt.match(/\b(?:auto\s+classify|auto\s+categori[sz]e|auto\s+sort)\s+(?:mail|email|message)\s+(\d+)\b/i);
+  if (byPhrase?.[1]) {
+    const id = Number(byPhrase[1]);
+    if (Number.isFinite(id) && id > 0) {
+      return Math.floor(id);
+    }
+  }
+  const ids = parseDeleteIds(prompt);
+  if (ids.length > 0) {
+    return Math.floor(ids[0]);
+  }
+  return null;
+}
+
+function sanitizeSubfolderName(value: string): string {
+  const cleaned = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^[-.]+|[-.]+$/g, '');
+  return cleaned;
 }
 
 function isMarkReadRequest(prompt: string): boolean {
@@ -1956,6 +1996,84 @@ function normalizeWhitespace(value: string): string {
   return value.replace(/\r/g, '').replace(/[ \t]+\n/g, '\n').trim();
 }
 
+async function loadAutoClassifyFolders(dbAll: DbAll): Promise<Array<{ name: string; path: string }>> {
+  const rows = await dbAll(
+    `SELECT name, path
+     FROM folders
+     WHERE LOWER(COALESCE(name, '')) NOT IN ('inbox', 'sent')
+       AND LOWER(COALESCE(path, '')) NOT IN ('inbox', 'inbox.inbox', 'sent', 'inbox.sent')
+     ORDER BY LOWER(COALESCE(path, '')) ASC;`,
+  );
+  const seen = new Set<string>();
+  const folders: Array<{ name: string; path: string }> = [];
+  for (const row of rows) {
+    const path = String(row?.path || '').trim();
+    const name = String(row?.name || '').trim();
+    if (!path) continue;
+    const key = path.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    folders.push({ name, path });
+  }
+  return folders;
+}
+
+function parseAutoClassifyDecision(raw: string, allowedFolders: Array<{ name: string; path: string }>): AutoClassifyDecision | null {
+  try {
+    const outer = JSON.parse(raw) as { msg?: string; message?: { content?: string } };
+    let content: string | undefined;
+    if (typeof outer.msg === 'string') {
+      try {
+        const inner = JSON.parse(outer.msg) as { message?: { content?: string } };
+        content = inner.message?.content;
+      } catch {
+        content = outer.msg;
+      }
+    } else if (typeof outer.message?.content === 'string') {
+      content = outer.message.content;
+    } else if ((outer as any)?.folder_path || (outer as any)?.confidence) {
+      content = raw;
+    }
+    if (!content) return null;
+    const parsed = JSON.parse(content) as {
+      folder_path?: unknown;
+      folder?: unknown;
+      confidence?: unknown;
+      reason?: unknown;
+      suggested_new_subfolder?: unknown;
+      suggested_subfolder?: unknown;
+    };
+    const rawFolder = String(parsed.folder_path ?? parsed.folder ?? '').trim();
+    const rawSuggested = String(parsed.suggested_new_subfolder ?? parsed.suggested_subfolder ?? '').trim();
+    const confidenceRaw = Number(parsed.confidence);
+    const confidence = Number.isFinite(confidenceRaw) ? Math.max(0, Math.min(1, confidenceRaw)) : 0;
+    const reason = String(parsed.reason ?? '').trim();
+
+    let folderPath: string | null = null;
+    if (rawFolder) {
+      const byPath = allowedFolders.find((entry) => entry.path.toLowerCase() === rawFolder.toLowerCase());
+      if (byPath) {
+        folderPath = byPath.path;
+      } else {
+        const byLeaf = allowedFolders.find((entry) => {
+          const leaf = entry.path.includes('.') ? entry.path.split('.').slice(-1)[0] : entry.path;
+          return leaf.toLowerCase() === rawFolder.toLowerCase() || entry.name.toLowerCase() === rawFolder.toLowerCase();
+        });
+        folderPath = byLeaf?.path || null;
+      }
+    }
+    const suggested = rawSuggested ? sanitizeSubfolderName(rawSuggested) : '';
+    return {
+      folder_path: folderPath,
+      confidence,
+      reason,
+      suggested_new_subfolder: suggested || null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function isInvalidSummaryText(value: string): boolean {
   const text = String(value || '').trim().toLowerCase();
   if (!text) {
@@ -2496,6 +2614,42 @@ function buildAttachmentExplainPrompt(payload: {
       },
       [],
     ),
+  };
+}
+
+function buildAutoClassifyPrompt(payload: {
+  prompt: string;
+  email: {
+    id: number;
+    from_raw: string;
+    subject: string;
+    folder_path: string;
+    summary: string;
+    text_body: string;
+  };
+  folders: Array<{ name: string; path: string }>;
+}) {
+  const serialized = JSON.stringify({
+    prompt: payload.prompt,
+    email: payload.email,
+    folders: payload.folders,
+    rules: {
+      never_choose: ['INBOX.inbox', 'INBOX', 'Inbox', 'Sent', 'INBOX.Sent'],
+      confidence_range: '0..1',
+      if_low_confidence_suggest_new_subfolder: true,
+      new_subfolder_parent: 'INBOX',
+      output_json_only: true,
+      output_schema: {
+        folder_path: 'string|null',
+        confidence: 'number',
+        reason: 'string',
+        suggested_new_subfolder: 'string|null',
+      },
+    },
+  });
+  return {
+    system: 'You are an email filing assistant. Respond ONLY in structured JSON.',
+    user: `Classify this email into exactly one folder from the provided folders. If confidence is low, suggest a new subfolder under INBOX.\nPayload:\n${serialized}`,
   };
 }
 
@@ -3661,7 +3815,8 @@ async function sendToAssistant(
     | ReturnType<typeof buildReplyExtractPrompt>
     | ReturnType<typeof buildReplyBodyDerivePrompt>
     | ReturnType<typeof buildEmailReadSummaryPrompt>
-    | ReturnType<typeof buildAttachmentExplainPrompt>,
+    | ReturnType<typeof buildAttachmentExplainPrompt>
+    | ReturnType<typeof buildAutoClassifyPrompt>,
   options?: { model?: string },
 ): Promise<string | null> {
   const rawUrl = process.env.ASSISTANT_URL ?? '';
@@ -4543,6 +4698,120 @@ export function createLlmHandler({
       } catch (err: any) {
         const reason = err?.message ? String(err.message) : 'Unknown error';
         return { success: false, type: 'message', message: `Mark-as-read failed: ${reason}` };
+      }
+    }
+
+    if (isAutoClassifyRequest(prompt)) {
+      if (!moveMail) {
+        return { success: false, type: 'message', message: 'Mail move is not available.' };
+      }
+      const emailId = extractAutoClassifyEmailId(prompt);
+      if (!emailId) {
+        return {
+          success: false,
+          type: 'message',
+          message: 'Please provide an email id. Example: auto classify email 34391',
+        };
+      }
+
+      const emailRow = await dbGet(
+        `SELECT email_messages.id,
+                COALESCE(email_messages.from_raw, '') AS from_raw,
+                COALESCE(email_messages.subject, '') AS subject,
+                COALESCE(folders.path, '') AS folder_path,
+                COALESCE(email_messages.text_body, '') AS text_body,
+                COALESCE(email_llm_summaries.summary, '') AS ai_summary
+         FROM email_messages
+         LEFT JOIN folders ON folders.id = email_messages.folder_id
+         LEFT JOIN email_llm_summaries ON email_llm_summaries.email_id = email_messages.id
+         WHERE email_messages.id = ?
+         LIMIT 1;`,
+        emailId,
+      );
+      if (!emailRow?.id) {
+        return { success: false, type: 'message', message: `Email ${emailId} was not found.` };
+      }
+
+      const folders = await loadAutoClassifyFolders(dbAll);
+      const summary = String(emailRow?.ai_summary || '').trim();
+      const body = String(emailRow?.text_body || '').trim();
+      const bodySnippet = body.length > 1600 ? `${body.slice(0, 1600)}...` : body;
+      const classifyPrompt = buildAutoClassifyPrompt({
+        prompt,
+        email: {
+          id: Number(emailRow.id),
+          from_raw: String(emailRow.from_raw || ''),
+          subject: String(emailRow.subject || ''),
+          folder_path: String(emailRow.folder_path || ''),
+          summary,
+          text_body: bodySnippet,
+        },
+        folders,
+      });
+
+      const raw = await sendToAssistant(classifyPrompt);
+      const decision = raw ? parseAutoClassifyDecision(raw, folders) : null;
+      if (!decision) {
+        return {
+          success: false,
+          type: 'message',
+          message: `Auto classify failed for email ${emailId}.`,
+        };
+      }
+
+      const lowConfidence = decision.confidence < 0.8;
+      const hasFolderChoice = Boolean(decision.folder_path);
+      const suggestedLeaf = sanitizeSubfolderName(String(decision.suggested_new_subfolder || ''));
+      const fallbackLeaf = sanitizeSubfolderName(String(emailRow?.subject || '').split(/\s+/).slice(0, 3).join('-'));
+      const chosenLeaf =
+        suggestedLeaf && !['inbox', 'sent'].includes(suggestedLeaf.toLowerCase())
+          ? suggestedLeaf
+          : fallbackLeaf && !['inbox', 'sent'].includes(fallbackLeaf.toLowerCase())
+            ? fallbackLeaf
+            : 'auto-classified';
+      const suggestedPath = `INBOX.${chosenLeaf}`;
+
+      if (lowConfidence && !skipConfirmation) {
+        const previewTarget = hasFolderChoice ? decision.folder_path : suggestedPath;
+        const reason = decision.reason ? ` Reason: ${decision.reason}` : '';
+        return {
+          success: true,
+          confirm: true,
+          type: 'message',
+          message:
+            `Auto classify suggests moving email ${emailId} to "${previewTarget}" ` +
+            `(confidence ${decision.confidence.toFixed(2)}).` +
+            (lowConfidence ? ` Confidence is low, suggested new subfolder: "${suggestedPath}".` : '') +
+            `${reason} Confirm?`,
+        };
+      }
+
+      const targetFolder = lowConfidence ? suggestedPath : (decision.folder_path || suggestedPath);
+      try {
+        const moveResult = await moveMail({ ids: [emailId], folder: targetFolder });
+        const moved = Number(moveResult?.moved || 0);
+        if (moved <= 0) {
+          return {
+            success: false,
+            type: 'message',
+            message: `Auto classify could not move email ${emailId} to ${targetFolder}.`,
+          };
+        }
+        const reason = decision.reason ? ` Reason: ${decision.reason}` : '';
+        return {
+          success: true,
+          type: 'message',
+          message:
+            `Auto classified email ${emailId} to "${targetFolder}" ` +
+            `(confidence ${decision.confidence.toFixed(2)}).${reason}`,
+        };
+      } catch (err: any) {
+        const reason = err?.message ? String(err.message) : 'Unknown error';
+        return {
+          success: false,
+          type: 'message',
+          message: `Auto classify move failed: ${reason}`,
+        };
       }
     }
 
