@@ -1178,7 +1178,7 @@ function parseReplySubjectBody(value: string): { subject?: string; body?: string
 
 function extractReplyMailRequest(prompt: string): ReplyMailRequest | null {
   const byIdPatterns = [
-    /\b(?:reply|respond)\s+(?:to\s+)?(?:mail|email|message)\s+(\d+)\b([\s\S]*)/i,
+    /\b(?:reply|respond)\s+(?:to\s+)?(?:mail|email|message)\s+(?:id\s*)?(\d+)\b([\s\S]*)/i,
     /\b(?:reply|respond)\s+(\d+)\b([\s\S]*)/i,
   ];
   for (const pattern of byIdPatterns) {
