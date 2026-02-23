@@ -959,7 +959,43 @@ function extractFolderHint(prompt: string): string | null {
   if (explicit?.[1]) {
     return explicit[1].trim().toLowerCase();
   }
-  const known = ['inbox', 'sent', 'trash', 'junk', 'spam', 'archive'];
+  const inline = prompt
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, ' ')
+    .match(/\bmy\s+(?:mails?|emails?)\s+([a-z0-9_.-]+)\b/i);
+  if (inline?.[1]) {
+    const candidate = inline[1].trim().toLowerCase();
+    const reserved = new Set([
+      'from',
+      'today',
+      'yesterday',
+      'this',
+      'last',
+      'week',
+      'month',
+      'year',
+      'friday',
+      'monday',
+      'tuesday',
+      'wednesday',
+      'thursday',
+      'saturday',
+      'sunday',
+      'all',
+      'latest',
+      'newest',
+      'oldest',
+      'recent',
+      'for',
+      'on',
+      'in',
+    ]);
+    if (!reserved.has(candidate)) {
+      return candidate;
+    }
+  }
+  const known = ['inbox', 'sent', 'trash', 'junk', 'spam', 'archive', 'topay'];
   const lowered = prompt.toLowerCase();
   const matched = known.find((entry) => lowered.includes(entry));
   return matched ?? null;
@@ -5060,6 +5096,7 @@ export function createLlmHandler({
       const wantAllDirect = wantsAllResults(prompt);
       const requestedLimitDirect = extractRequestedEmailLimit(prompt);
       const senderTermDirect = extractSenderFilterTerm(prompt);
+      const folderHintDirect = extractFolderHint(prompt);
       const todayMyMails = isTodayMyMailsPrompt(prompt);
       const weekdayRange = extractWeekdayDateRange(prompt);
       const now = new Date();
@@ -5073,19 +5110,33 @@ export function createLlmHandler({
       const directSqlBase =
         `SELECT email_messages.id, email_messages.from_raw, email_messages.subject, email_messages.received_at, ` +
         `(SELECT GROUP_CONCAT(filename, ', ') FROM email_attachments WHERE email_attachments.email_id = email_messages.id) AS attachments ` +
-        `FROM email_messages `;
+        `FROM email_messages ` +
+        `INNER JOIN folders ON folders.id = email_messages.folder_id `;
       const directWhere = senderTermDirect
         ? `WHERE LOWER(COALESCE(email_messages.from_raw, '')) LIKE ? AND email_messages.received_at IS NOT NULL `
         : `WHERE email_messages.received_at IS NOT NULL `;
+      let directWhereWithFolder = directWhere;
+      if (folderHintDirect) {
+        directWhereWithFolder +=
+          `AND (` +
+          `LOWER(folders.name) = ? OR LOWER(folders.path) = ? OR LOWER(folders.path) LIKE ?` +
+          `) `;
+      } else {
+        directWhereWithFolder += `AND LOWER(folders.path) = 'inbox.inbox' `;
+      }
       const directWhereWithDate = (todayMyMails || weekdayRange)
-        ? `${directWhere}AND email_messages.received_at >= ? AND email_messages.received_at < ? `
-        : directWhere;
+        ? `${directWhereWithFolder}AND email_messages.received_at >= ? AND email_messages.received_at < ? `
+        : directWhereWithFolder;
       const directOrder = `ORDER BY email_messages.received_at DESC, email_messages.id DESC `;
       const directLimit = wantAllDirect || todayMyMails || Boolean(weekdayRange) ? '' : `LIMIT ${safeLimit}`;
       const directSql = `${directSqlBase}${directWhereWithDate}${directOrder}${directLimit}`.trim();
       const directRowsParams: unknown[] = [];
       if (senderTermDirect) {
         directRowsParams.push(`%${senderTermDirect}%`);
+      }
+      if (folderHintDirect) {
+        const folder = folderHintDirect.toLowerCase();
+        directRowsParams.push(folder, folder, `%${folder}%`);
       }
       if (todayMyMails) {
         directRowsParams.push(startOfLocalDay.toISOString(), startOfNextLocalDay.toISOString());
