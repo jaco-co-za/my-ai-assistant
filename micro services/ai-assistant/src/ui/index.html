@@ -884,10 +884,13 @@
                           <span class="email-viewer-counter" id="emailViewerCounter">0/0</span>
                           <button type="button" class="icon-button email-viewer-nav-button" id="emailViewerNextButton" aria-label="Next email">&#8250;</button>
                           <button type="button" class="icon-button email-viewer-nav-button" style="min-width: 120px;" id="emailViewerReplyButton" aria-label="Reply to this email">Reply</button>
-                          <button type="button" class="icon-button email-viewer-nav-button" style="min-width: 140px;" id="emailViewerMoveTopayButton" aria-label="Move this email to INBOX.topay">Move to Topay</button>
-                          <button type="button" class="icon-button email-viewer-nav-button" style="min-width: 130px;" id="emailViewerMovePopsButton" aria-label="Move this email to INBOX.pops">Move to Pops</button>
-                          <button type="button" class="icon-button email-viewer-nav-button" style="min-width: 140px;" id="emailViewerAutoClassifyButton" aria-label="Auto classify this email">Auto Classify</button>
-                          <button type="button" class="icon-button email-viewer-nav-button" style="min-width: 140px;" id="emailViewerBlacklistButton" aria-label="Blacklist sender and move to Trash">Blacklist Sender</button>
+                          <select id="emailViewerActionSelect" class="email-viewer-nav-button" aria-label="Email action menu" style="min-width: 150px; border-radius: 8px; border: 1px solid var(--border); background: #0f1714; color: var(--text); padding: 0 8px;">
+                            <option value="move-topay">Move to Topay</option>
+                            <option value="move-pops">Move to Pops</option>
+                            <option value="blacklist">Blacklist Sender</option>
+                          </select>
+                          <button type="button" class="icon-button email-viewer-nav-button" style="min-width: 110px;" id="emailViewerActionApplyButton" aria-label="Apply selected email action">Apply Action</button>
+                          <button type="button" class="icon-button email-viewer-nav-button" style="min-width: 120px;" id="emailViewerMoveTrashButton" aria-label="Move this email to Trash">Move to Trash</button>
                           <button type="button" class="icon-button email-viewer-nav-button close-button" id="emailViewerRemoveButton" aria-label="Remove from email viewer queue">&times;</button>
                         </div>
                       </div>
@@ -943,10 +946,9 @@
           const emailViewerPrevButton = document.getElementById("emailViewerPrevButton");
           const emailViewerNextButton = document.getElementById("emailViewerNextButton");
           const emailViewerReplyButton = document.getElementById("emailViewerReplyButton");
-          const emailViewerMoveTopayButton = document.getElementById("emailViewerMoveTopayButton");
-          const emailViewerMovePopsButton = document.getElementById("emailViewerMovePopsButton");
-          const emailViewerAutoClassifyButton = document.getElementById("emailViewerAutoClassifyButton");
-          const emailViewerBlacklistButton = document.getElementById("emailViewerBlacklistButton");
+          const emailViewerActionSelect = document.getElementById("emailViewerActionSelect");
+          const emailViewerActionApplyButton = document.getElementById("emailViewerActionApplyButton");
+          const emailViewerMoveTrashButton = document.getElementById("emailViewerMoveTrashButton");
           const emailViewerRemoveButton = document.getElementById("emailViewerRemoveButton");
           const emailViewerCounter = document.getElementById("emailViewerCounter");
           const emailViewerBusy = document.getElementById("emailViewerBusy");
@@ -998,6 +1000,7 @@
           let pendingRequestId = "";
           let pendingReplyPrefill = "";
           let pendingPromptText = "";
+          let lastMailListPrompt = "my mails";
           let pendingAttachmentAutoDownloadId = "";
           let pendingEmailViewerDownloadRequest = null;
           let pendingEmailViewerDetailsRequest = null;
@@ -1361,6 +1364,9 @@
             if (pendingEmailViewerSummaryRequest) {
               pushEvent("email-viewer", "wait for summary generation to finish");
               return false;
+            }
+            if (/^\s*my\s+mails\b/i.test(text)) {
+              lastMailListPrompt = text;
             }
 
             clearResult();
@@ -1888,12 +1894,10 @@
             emailViewerPrevButton.disabled = total === 0 || emailViewerQueueIndex <= 0;
             emailViewerNextButton.disabled = total === 0 || emailViewerQueueIndex >= total - 1;
             emailViewerReplyButton.disabled = total === 0 || emailViewerQueueIndex < 0 || emailViewerQueueIndex >= total;
-            emailViewerMoveTopayButton.disabled = total === 0 || emailViewerQueueIndex < 0 || emailViewerQueueIndex >= total;
-            emailViewerMovePopsButton.disabled = total === 0 || emailViewerQueueIndex < 0 || emailViewerQueueIndex >= total;
-            emailViewerAutoClassifyButton.disabled = total === 0 || emailViewerQueueIndex < 0 || emailViewerQueueIndex >= total;
-            emailViewerBlacklistButton.disabled = total === 0 || emailViewerQueueIndex < 0 || emailViewerQueueIndex >= total;
+            emailViewerActionSelect.disabled = total === 0 || emailViewerQueueIndex < 0 || emailViewerQueueIndex >= total;
+            emailViewerActionApplyButton.disabled = total === 0 || emailViewerQueueIndex < 0 || emailViewerQueueIndex >= total;
+            emailViewerMoveTrashButton.disabled = total === 0 || emailViewerQueueIndex < 0 || emailViewerQueueIndex >= total;
             emailViewerRemoveButton.disabled = total === 0 || emailViewerQueueIndex < 0;
-            updateMoveButtonState();
           }
 
           function prefillReplyForCurrentEmail() {
@@ -1930,29 +1934,7 @@
             );
           }
 
-          function getMoveTargetForCard(card) {
-            if (isEmailInNamedFolder(card, "topay")) {
-              return { label: "Move to Paid", targetFolderPath: "INBOX.paid", targetLeaf: "paid" };
-            }
-            return { label: "Move to Topay", targetFolderPath: "INBOX.topay", targetLeaf: "topay" };
-          }
-
-          function updateMoveButtonState() {
-            if (!emailViewerMoveTopayButton) {
-              return;
-            }
-            if (emailViewerQueue.length === 0 || emailViewerQueueIndex < 0 || emailViewerQueueIndex >= emailViewerQueue.length) {
-              emailViewerMoveTopayButton.textContent = "Move to Topay";
-              emailViewerMoveTopayButton.setAttribute("aria-label", "Move this email to INBOX.topay");
-              return;
-            }
-            const card = emailViewerQueue[emailViewerQueueIndex];
-            const target = getMoveTargetForCard(card);
-            emailViewerMoveTopayButton.textContent = target.label;
-            emailViewerMoveTopayButton.setAttribute("aria-label", `${target.label} for this email`);
-          }
-
-          function moveCurrentEmailByFolderState() {
+          function moveCurrentEmailToTopay() {
             if (emailViewerQueue.length === 0 || emailViewerQueueIndex < 0 || emailViewerQueueIndex >= emailViewerQueue.length) {
               renderEmailViewerQueueNav();
               return;
@@ -1967,10 +1949,10 @@
               pushEvent("email-viewer", "socket not connected");
               return;
             }
-            const target = getMoveTargetForCard(card);
-            const command = `move email ${Math.floor(emailId)} to ${target.targetFolderPath}`;
+            const targetFolderPath = "INBOX.topay";
+            const command = `move email ${Math.floor(emailId)} to ${targetFolderPath}`;
             card.folder = "INBOX";
-            card.subfolder = target.targetLeaf;
+            card.subfolder = "topay";
             persistEmailViewerQueue();
             renderCurrentEmailViewerEntry();
             setWaiting("email move");
@@ -1982,7 +1964,7 @@
                 skipCache: true,
               }),
             );
-            pushEvent("email-viewer", `move requested: email ${Math.floor(emailId)} -> ${target.targetFolderPath}`);
+            pushEvent("email-viewer", `move requested: email ${Math.floor(emailId)} -> ${targetFolderPath}`);
           }
 
           function moveCurrentEmailToPops() {
@@ -2018,7 +2000,7 @@
             pushEvent("email-viewer", `move requested: email ${Math.floor(emailId)} -> ${targetFolderPath}`);
           }
 
-          function autoClassifyCurrentEmail() {
+          function moveCurrentEmailToTrash() {
             if (emailViewerQueue.length === 0 || emailViewerQueueIndex < 0 || emailViewerQueueIndex >= emailViewerQueue.length) {
               renderEmailViewerQueueNav();
               return;
@@ -2026,24 +2008,28 @@
             const card = emailViewerQueue[emailViewerQueueIndex];
             const emailId = Number(card && card.id);
             if (!Number.isFinite(emailId) || emailId <= 0) {
-              pushEvent("email-viewer", "invalid email id for auto classify");
+              pushEvent("email-viewer", "invalid email id for trash move");
               return;
             }
             if (!socket || socket.readyState !== WebSocket.OPEN) {
               pushEvent("email-viewer", "socket not connected");
               return;
             }
-            const command = `auto classify email ${Math.floor(emailId)}`;
-            setWaiting("auto classify");
+            const command = `delete email ${Math.floor(emailId)}`;
+            card.folder = "Trash";
+            card.subfolder = "Trash";
+            persistEmailViewerQueue();
+            renderCurrentEmailViewerEntry();
+            setWaiting("email move");
             socket.send(
               JSON.stringify({
                 type: "message",
                 message: command,
-                requestId: `eva-${Math.random().toString(36).slice(2)}`,
+                requestId: `evt-${Math.random().toString(36).slice(2)}`,
                 skipCache: true,
               }),
             );
-            pushEvent("email-viewer", `auto classify requested: email ${Math.floor(emailId)}`);
+            pushEvent("email-viewer", `move requested: email ${Math.floor(emailId)} -> Trash`);
           }
 
           function blacklistSenderForCurrentEmail() {
@@ -3856,20 +3842,21 @@
             prefillReplyForCurrentEmail();
           });
 
-          emailViewerMoveTopayButton.addEventListener("click", function () {
-            moveCurrentEmailByFolderState();
+          emailViewerActionApplyButton.addEventListener("click", function () {
+            const selectedAction = String(emailViewerActionSelect.value || "").trim().toLowerCase();
+            if (selectedAction === "move-pops") {
+              moveCurrentEmailToPops();
+              return;
+            }
+            if (selectedAction === "blacklist") {
+              blacklistSenderForCurrentEmail();
+              return;
+            }
+            moveCurrentEmailToTopay();
           });
 
-          emailViewerMovePopsButton.addEventListener("click", function () {
-            moveCurrentEmailToPops();
-          });
-
-          emailViewerAutoClassifyButton.addEventListener("click", function () {
-            autoClassifyCurrentEmail();
-          });
-
-          emailViewerBlacklistButton.addEventListener("click", function () {
-            blacklistSenderForCurrentEmail();
+          emailViewerMoveTrashButton.addEventListener("click", function () {
+            moveCurrentEmailToTrash();
           });
 
           openAiApiToggle.addEventListener("click", function () {

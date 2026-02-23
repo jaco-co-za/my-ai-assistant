@@ -70,6 +70,23 @@ if [[ ! -f "$ENV_FILE" ]]; then
   echo "Update credentials in $ENV_FILE before using in shared environments."
 fi
 
+set_env_value() {
+  local key="$1"
+  local value="$2"
+  if grep -q "^${key}=" "$ENV_FILE"; then
+    sed -i "s|^${key}=.*|${key}=${value}|" "$ENV_FILE"
+  else
+    printf '%s=%s\n' "$key" "$value" >>"$ENV_FILE"
+  fi
+}
+
+# Keep installer aligned with project standard (MySQL 8).
+# Older environments may still have MYSQL_IMAGE=mysql:9 in .env.
+if grep -q '^MYSQL_IMAGE=mysql:9' "$ENV_FILE"; then
+  echo "Detected MYSQL_IMAGE=mysql:9 in $ENV_FILE; normalizing to mysql:8"
+  set_env_value "MYSQL_IMAGE" "mysql:8"
+fi
+
 set -a
 source "$ENV_FILE"
 set +a

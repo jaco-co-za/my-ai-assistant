@@ -876,23 +876,6 @@ async function initDb() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
-    CREATE TABLE IF NOT EXISTS auto_classification_logs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      email_id INTEGER NOT NULL,
-      prompt TEXT,
-      sender TEXT,
-      subject TEXT,
-      current_folder TEXT,
-      suggested_folder TEXT,
-      suggested_confidence REAL,
-      suggested_reason TEXT,
-      suggested_new_subfolder TEXT,
-      user_action TEXT,
-      user_override_folder TEXT,
-      final_folder TEXT,
-      status TEXT NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
   `);
 
   const columns = await dbAll("PRAGMA table_info('email_messages');");
