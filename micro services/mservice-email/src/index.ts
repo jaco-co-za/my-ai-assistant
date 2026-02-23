@@ -223,10 +223,32 @@ async function deleteAttachmentFiles(emailIds: number[]) {
   }
 }
 
-async function deleteMail(payload: { ids: number[] }) {
+async function ensureFolderExists(folderPathRaw: string) {
+  const folderPath = String(folderPathRaw || '').trim();
+  if (!folderPath) {
+    throw new Error('Target folder path is required.');
+  }
+  let folder = await dbGet('SELECT id, name, path FROM folders WHERE path = ? LIMIT 1;', folderPath);
+  if (!folder?.id) {
+    const folderName = folderPath.includes('.') ? folderPath.split('.').slice(-1)[0] : folderPath;
+    await dbRun('INSERT INTO folders (name, path) VALUES (?, ?);', folderName, folderPath);
+    folder = await dbGet('SELECT id, name, path FROM folders WHERE path = ? LIMIT 1;', folderPath);
+  }
+  const folderId = Number(folder?.id || 0);
+  if (!Number.isFinite(folderId) || folderId <= 0) {
+    throw new Error(`Unable to resolve folder id for target folder "${folderPath}".`);
+  }
+  return { folderId, folderPath };
+}
+
+async function moveMailToFolder(payload: { ids: number[]; folder: string }) {
   const ids = Array.from(new Set(payload.ids)).filter((id) => Number.isFinite(id) && id > 0);
+  const targetFolderPath = String(payload.folder || '').trim();
   if (ids.length === 0) {
-    return { requested: 0, found: 0, deleted: 0, skipped: 0 };
+    return { requested: 0, found: 0, moved: 0, skipped: 0, target_folder: targetFolderPath };
+  }
+  if (!targetFolderPath) {
+    throw new Error('Target folder is required.');
   }
   if (!EMAIL_IMAP_HOST || !EMAIL_IMAP_USERNAME || !EMAIL_IMAP_PASSWORD) {
     throw new Error('IMAP settings are missing.');
@@ -268,14 +290,7 @@ async function deleteMail(payload: { ids: number[] }) {
     },
   });
 
-  const trashPath = (EMAIL_IMAP_TRASH_MAILBOX || 'Trash').trim() || 'Trash';
-  let trashFolder = await dbGet('SELECT id, path FROM folders WHERE path = ? LIMIT 1;', trashPath);
-  if (!trashFolder?.id) {
-    await dbRun('INSERT INTO folders (name, path) VALUES (?, ?);', trashPath, trashPath);
-    trashFolder = await dbGet('SELECT id, path FROM folders WHERE path = ? LIMIT 1;', trashPath);
-  }
-  const trashFolderId = Number(trashFolder?.id || 0);
-
+  const targetFolder = await ensureFolderExists(targetFolderPath);
   const movedIds = new Set<number>();
   const movedUidById = new Map<number, number>();
   const errors: string[] = [];
@@ -292,7 +307,7 @@ async function deleteMail(payload: { ids: number[] }) {
         );
         const moveResult: any = await withTimeout(
           `IMAP messageMove(${folderPath})`,
-          client.messageMove(uids, trashPath, { uid: true }),
+          client.messageMove(uids, targetFolderPath, { uid: true }),
           EMAIL_IMAP_OPERATION_TIMEOUT_MS,
         );
         const uidMap =
@@ -321,20 +336,20 @@ async function deleteMail(payload: { ids: number[] }) {
     await withTimeout('IMAP logout', client.logout(), EMAIL_IMAP_OPERATION_TIMEOUT_MS).catch(() => {});
   }
 
-  if (trashFolderId > 0 && movedIds.size > 0) {
+  if (movedIds.size > 0) {
     for (const id of movedIds) {
       const movedUid = movedUidById.get(id);
       if (movedUid && Number.isFinite(movedUid) && movedUid > 0) {
         await dbRun(
           'UPDATE email_messages SET folder_id = ?, server_uid = ? WHERE id = ?;',
-          trashFolderId,
+          targetFolder.folderId,
           movedUid,
           id,
         );
       } else {
         await dbRun(
           'UPDATE email_messages SET folder_id = ? WHERE id = ?;',
-          trashFolderId,
+          targetFolder.folderId,
           id,
         );
       }
@@ -345,9 +360,22 @@ async function deleteMail(payload: { ids: number[] }) {
   return {
     requested: ids.length,
     found: foundIds.size,
-    deleted: movedIds.size,
+    moved: movedIds.size,
     skipped: skipped,
     errors: errors.length > 0 ? errors : undefined,
+    target_folder: targetFolderPath,
+  };
+}
+
+async function deleteMail(payload: { ids: number[] }) {
+  const trashPath = (EMAIL_IMAP_TRASH_MAILBOX || 'Trash').trim() || 'Trash';
+  const result = await moveMailToFolder({ ids: payload.ids, folder: trashPath });
+  return {
+    requested: result.requested,
+    found: result.found,
+    deleted: result.moved,
+    skipped: result.skipped,
+    errors: result.errors,
   };
 }
 
@@ -903,6 +931,7 @@ async function start() {
     },
     sendMail: async (payload) => sendMail(payload),
     deleteMail: async (payload) => deleteMail(payload),
+    moveMail: async (payload) => moveMailToFolder(payload),
     markAsRead: async (payload) => markMailRead(payload),
     deleteTrash: async () => deleteTrash(),
     deleteFolder: async (payload) => deleteFolder(payload),

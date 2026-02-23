@@ -186,6 +186,15 @@ type DeleteMailResult = {
   errors?: string[];
 };
 
+type MoveMailResult = {
+  requested: number;
+  found: number;
+  moved: number;
+  skipped: number;
+  target_folder: string;
+  errors?: string[];
+};
+
 type MarkReadResult = {
   requested: number;
   found: number;
@@ -651,6 +660,22 @@ function isDeleteMailRequest(prompt: string): boolean {
   const hasDelete = /\b(delete|remove|purge)\b/.test(text);
   const hasMail = /\b(mail|email|emails)\b/.test(text);
   return hasDelete && hasMail;
+}
+
+function isMoveMailRequest(prompt: string): boolean {
+  const text = prompt.toLowerCase();
+  const hasMove = /\b(move)\b/.test(text);
+  const hasMail = /\b(mail|email|emails|message)\b/.test(text);
+  const hasTarget = /\bto\s+[a-z0-9_.-]+\b/.test(text);
+  return hasMove && hasMail && hasTarget;
+}
+
+function extractMoveFolder(prompt: string): string | null {
+  const explicit = prompt.match(/\bto\s+([a-z0-9_.-]+)\b/i);
+  if (!explicit?.[1]) {
+    return null;
+  }
+  return String(explicit[1]).trim();
 }
 
 function isMarkReadRequest(prompt: string): boolean {
@@ -3738,6 +3763,7 @@ export function createLlmHandler({
   syncMail,
   sendMail,
   deleteMail,
+  moveMail,
   markAsRead,
   deleteTrash,
   deleteFolder,
@@ -3748,6 +3774,7 @@ export function createLlmHandler({
   syncMail?: () => Promise<void>;
   sendMail?: (payload: SendMailPayload) => Promise<SendMailResult>;
   deleteMail?: (payload: { ids: number[] }) => Promise<DeleteMailResult>;
+  moveMail?: (payload: { ids: number[]; folder: string }) => Promise<MoveMailResult>;
   markAsRead?: (payload: { all?: boolean; ids?: number[]; folder?: string; limit?: number }) => Promise<MarkReadResult>;
   deleteTrash?: () => Promise<DeleteTrashResult>;
   deleteFolder?: (payload: { name: string }) => Promise<DeleteFolderResult>;
@@ -4888,6 +4915,55 @@ export function createLlmHandler({
       } catch (err: any) {
         const reason = err?.message ? String(err.message) : 'Unknown error';
         return { success: false, confirm: false, message: `Email delete failed: ${reason}` };
+      }
+    }
+
+    if (isMoveMailRequest(prompt)) {
+      if (!moveMail) {
+        return { success: false, message: 'Mail move is not available.' };
+      }
+      const folder = extractMoveFolder(prompt);
+      let ids = parseDeleteIds(prompt);
+      if (ids.length === 0) {
+        ids = await resolveRelativeDeleteIds(dbGet, prompt);
+      }
+      if (!folder) {
+        return {
+          success: false,
+          confirm: false,
+          message: 'Target folder is required. Example: move email 123 to INBOX.topay',
+        };
+      }
+      if (ids.length === 0) {
+        return {
+          success: false,
+          confirm: false,
+          message: 'Email ids are required for move.',
+        };
+      }
+      const existingIds = await loadExistingMessageIds(dbAll, ids);
+      if (existingIds.length === 0) {
+        return {
+          success: true,
+          confirm: false,
+          message: 'No matching emails found to move.',
+        };
+      }
+      try {
+        const result = await moveMail({ ids, folder });
+        const parts = [
+          `Moved ${result.moved} email${result.moved === 1 ? '' : 's'} to ${result.target_folder}.`,
+        ];
+        if (result.skipped > 0) {
+          parts.push(`Skipped ${result.skipped}.`);
+        }
+        if (result.errors && result.errors.length > 0) {
+          parts.push(`Errors: ${result.errors.join('; ')}`);
+        }
+        return { success: result.moved > 0, confirm: false, message: parts.join(' ') };
+      } catch (err: any) {
+        const reason = err?.message ? String(err.message) : 'Unknown error';
+        return { success: false, confirm: false, message: `Email move failed: ${reason}` };
       }
     }
 

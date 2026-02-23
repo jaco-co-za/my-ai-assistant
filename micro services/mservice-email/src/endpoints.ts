@@ -24,6 +24,14 @@ type EndpointsConfig = {
     skipped: number;
     errors?: string[];
   }>;
+  moveMail?: (payload: { ids: number[]; folder: string }) => Promise<{
+    requested: number;
+    found: number;
+    moved: number;
+    skipped: number;
+    target_folder: string;
+    errors?: string[];
+  }>;
   markAsRead?: (payload: { all?: boolean; ids?: number[]; folder?: string; limit?: number }) => Promise<{
     requested: number;
     found: number;
@@ -157,6 +165,7 @@ export function registerEndpoints({
   syncMail,
   sendMail,
   deleteMail,
+  moveMail,
   markAsRead,
   deleteTrash,
   deleteFolder,
@@ -172,6 +181,7 @@ export function registerEndpoints({
     syncMail,
     sendMail,
     deleteMail,
+    moveMail,
     markAsRead,
     deleteTrash,
     deleteFolder,
