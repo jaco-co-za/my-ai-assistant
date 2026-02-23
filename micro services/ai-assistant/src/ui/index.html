@@ -862,6 +862,7 @@
                           <button type="button" class="icon-button email-viewer-nav-button" id="emailViewerNextButton" aria-label="Next email">&#8250;</button>
                           <button type="button" class="icon-button email-viewer-nav-button" style="min-width: 120px;" id="emailViewerReplyButton" aria-label="Reply to this email">Reply</button>
                           <button type="button" class="icon-button email-viewer-nav-button" style="min-width: 140px;" id="emailViewerMoveTopayButton" aria-label="Move this email to INBOX.topay">Move to Topay</button>
+                          <button type="button" class="icon-button email-viewer-nav-button" style="min-width: 140px;" id="emailViewerBlacklistButton" aria-label="Blacklist sender and move to Trash">Blacklist Sender</button>
                           <button type="button" class="icon-button email-viewer-nav-button close-button" id="emailViewerRemoveButton" aria-label="Remove from email viewer queue">&times;</button>
                         </div>
                       </div>
@@ -917,6 +918,7 @@
           const emailViewerNextButton = document.getElementById("emailViewerNextButton");
           const emailViewerReplyButton = document.getElementById("emailViewerReplyButton");
           const emailViewerMoveTopayButton = document.getElementById("emailViewerMoveTopayButton");
+          const emailViewerBlacklistButton = document.getElementById("emailViewerBlacklistButton");
           const emailViewerRemoveButton = document.getElementById("emailViewerRemoveButton");
           const emailViewerCounter = document.getElementById("emailViewerCounter");
           const emailViewerBusy = document.getElementById("emailViewerBusy");
@@ -1859,6 +1861,7 @@
             emailViewerNextButton.disabled = total === 0 || emailViewerQueueIndex >= total - 1;
             emailViewerReplyButton.disabled = total === 0 || emailViewerQueueIndex < 0 || emailViewerQueueIndex >= total;
             emailViewerMoveTopayButton.disabled = total === 0 || emailViewerQueueIndex < 0 || emailViewerQueueIndex >= total;
+            emailViewerBlacklistButton.disabled = total === 0 || emailViewerQueueIndex < 0 || emailViewerQueueIndex >= total;
             emailViewerRemoveButton.disabled = total === 0 || emailViewerQueueIndex < 0;
             updateMoveButtonState();
           }
@@ -1950,6 +1953,45 @@
               }),
             );
             pushEvent("email-viewer", `move requested: email ${Math.floor(emailId)} -> ${target.targetFolderPath}`);
+          }
+
+          function blacklistSenderForCurrentEmail() {
+            if (emailViewerQueue.length === 0 || emailViewerQueueIndex < 0 || emailViewerQueueIndex >= emailViewerQueue.length) {
+              renderEmailViewerQueueNav();
+              return;
+            }
+            const card = emailViewerQueue[emailViewerQueueIndex];
+            const emailId = Number(card && card.id);
+            if (!Number.isFinite(emailId) || emailId <= 0) {
+              pushEvent("email-viewer", "invalid email id for blacklist");
+              return;
+            }
+            const fromLabel = String(card && card.from ? card.from : "").trim();
+            const confirmMessage = fromLabel
+              ? `Add sender "${fromLabel}" to blacklist and move this email to Trash?`
+              : `Add this email sender to blacklist and move this email to Trash?`;
+            if (!window.confirm(confirmMessage)) {
+              return;
+            }
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+              pushEvent("email-viewer", "socket not connected");
+              return;
+            }
+            const command = `block email ${Math.floor(emailId)}`;
+            card.folder = "Trash";
+            card.subfolder = "Trash";
+            persistEmailViewerQueue();
+            renderCurrentEmailViewerEntry();
+            setWaiting("blacklist sender");
+            socket.send(
+              JSON.stringify({
+                type: "message",
+                message: command,
+                requestId: `evb-${Math.random().toString(36).slice(2)}`,
+                skipCache: true,
+              }),
+            );
+            pushEvent("email-viewer", `blacklist requested: email ${Math.floor(emailId)} sender`);
           }
 
           function persistEmailViewerQueue() {
@@ -3725,6 +3767,10 @@
 
           emailViewerMoveTopayButton.addEventListener("click", function () {
             moveCurrentEmailByFolderState();
+          });
+
+          emailViewerBlacklistButton.addEventListener("click", function () {
+            blacklistSenderForCurrentEmail();
           });
 
           openAiApiToggle.addEventListener("click", function () {

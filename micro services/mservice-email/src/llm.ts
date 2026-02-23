@@ -4569,13 +4569,6 @@ export function createLlmHandler({
         return { success: false, confirm: false, message: `Sender could not be determined for email ${emailId}.` };
       }
       const matchedIds = await loadMessageIdsForSenderPatterns(dbAll, [pattern]);
-      if (!skipConfirmation) {
-        return {
-          success: true,
-          confirm: true,
-          message: `Confirm blocking sender "${pattern}" from email ${emailId}? This will move ${matchedIds.length} current email${matchedIds.length === 1 ? '' : 's'} to Trash.`,
-        };
-      }
       await dbRun(
         `INSERT INTO blocked_senders (pattern)
          VALUES (?)
