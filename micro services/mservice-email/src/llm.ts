@@ -2002,6 +2002,9 @@ async function loadAutoClassifyFolders(dbAll: DbAll): Promise<Array<{ name: stri
      FROM folders
      WHERE LOWER(COALESCE(name, '')) NOT IN ('inbox', 'sent')
        AND LOWER(COALESCE(path, '')) NOT IN ('inbox', 'inbox.inbox', 'sent', 'inbox.sent')
+       AND LOWER(COALESCE(name, '')) != 'topay'
+       AND LOWER(COALESCE(path, '')) != 'inbox.topay'
+       AND LOWER(COALESCE(path, '')) != 'topay'
      ORDER BY LOWER(COALESCE(path, '')) ASC;`,
   );
   const seen = new Set<string>();

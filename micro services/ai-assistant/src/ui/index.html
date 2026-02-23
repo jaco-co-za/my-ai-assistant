@@ -819,6 +819,7 @@
                 <div class="upload-queue" id="uploadQueueList"></div>
               </div>
               <button type="submit" id="sendButton">Send Message</button>
+              <button type="button" id="sendYesButton">Yes</button>
               <button type="button" id="sendNoCacheButton">Send Without Cache</button>
             </form>
             <div class="banner" id="tabBanner">Already open in another tab.</div>
@@ -902,6 +903,7 @@
           const form = document.getElementById("sendForm");
           const textarea = document.getElementById("message");
           const button = document.getElementById("sendButton");
+          const sendYesButton = document.getElementById("sendYesButton");
           const sendNoCacheButton = document.getElementById("sendNoCacheButton");
           const statusRow = document.getElementById("statusRow");
           const statusText = document.getElementById("statusText");
@@ -3947,6 +3949,23 @@
               return;
             }
             textarea.value = "";
+          });
+
+          sendYesButton.addEventListener("click", function () {
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+              pushEvent("socket", "not connected");
+              return;
+            }
+            const message = "yes";
+            setWaiting("sending");
+            socket.send(
+              JSON.stringify({
+                type: "message",
+                message: message,
+                requestId: `yes-${Math.random().toString(36).slice(2)}`,
+              }),
+            );
+            textarea.focus();
           });
 
           sendNoCacheButton.addEventListener("click", function () {
