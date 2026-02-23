@@ -531,12 +531,31 @@ async function postWhatsappAttachments(
   console.log(`[whatsapp-attachment] complete chatId=${chatId} count=${attachments.length}`);
 }
 
-function createEmailConfirmation(from: string, url: string, payload: Record<string, unknown>): void {
+function extractAutoClassifySuggestedFolder(message: string): string | null {
+  const text = String(message || "");
+  const match = text.match(/auto classify suggests moving email\s+\d+\s+to\s+"([^"]+)"/i);
+  if (!match?.[1]) {
+    return null;
+  }
+  const folder = String(match[1]).trim();
+  return folder.length > 0 ? folder : null;
+}
+
+function createEmailConfirmation(
+  from: string,
+  url: string,
+  payload: Record<string, unknown>,
+  options?: { autoClassifySuggestedFolder?: string | null },
+): void {
   const db = getDatabase();
   const id = randomUUID();
   const createdAt = new Date().toISOString();
   const expiresAt = new Date(Date.now() + CONFIRM_TTL_MS).toISOString();
-  const confirmationPayload = JSON.stringify({ replyUrl: url, payload });
+  const confirmationPayload = JSON.stringify({
+    replyUrl: url,
+    payload,
+    auto_classify_suggested_folder: options?.autoClassifySuggestedFolder || null,
+  });
   db.prepare(
     `INSERT INTO pending_confirmations (id, "from", action, payload, created_at, expires_at)
      VALUES (?, ?, ?, ?, ?, ?)`,
@@ -602,7 +621,8 @@ export async function handleEmail(
       const confirmMessage = typeof parsed?.message === "string" ? parsed.message.trim() : "";
       if (confirm && confirmMessage) {
         const url = resolveEmailUrl(process.env.EMAIL_MICRO_SERVICE_URL);
-        createEmailConfirmation(from, url, payload);
+        const suggestedFolder = extractAutoClassifySuggestedFolder(confirmMessage);
+        createEmailConfirmation(from, url, payload, { autoClassifySuggestedFolder: suggestedFolder });
         return {
           success: true,
           code: 200,

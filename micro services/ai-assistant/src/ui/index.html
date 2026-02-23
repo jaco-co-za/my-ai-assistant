@@ -44,6 +44,26 @@
         display: grid;
         gap: 12px;
       }
+      .send-primary-row {
+        display: flex;
+        align-items: stretch;
+        gap: 10px;
+      }
+      .send-primary-main {
+        flex: 0 0 75%;
+      }
+      .send-primary-yes {
+        flex: 0 0 20%;
+      }
+      @media (max-width: 900px) {
+        .send-primary-row {
+          flex-direction: column;
+        }
+        .send-primary-main,
+        .send-primary-yes {
+          flex: 1 1 auto;
+        }
+      }
       textarea {
         min-height: 60px;
         padding: 12px;
@@ -818,8 +838,10 @@
                 <textarea id="uploadCaption" class="upload-caption" placeholder="Optional caption to store with these files"></textarea>
                 <div class="upload-queue" id="uploadQueueList"></div>
               </div>
-              <button type="submit" id="sendButton">Send Message</button>
-              <button type="button" id="sendYesButton">Yes</button>
+              <div class="send-primary-row">
+                <button type="submit" id="sendButton" class="send-primary-main">Send Message</button>
+                <button type="button" id="sendYesButton" class="send-primary-yes">Yes</button>
+              </div>
               <button type="button" id="sendNoCacheButton">Send Without Cache</button>
             </form>
             <div class="banner" id="tabBanner">Already open in another tab.</div>

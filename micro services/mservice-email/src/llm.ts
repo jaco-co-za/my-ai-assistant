@@ -669,6 +669,57 @@ function isDeleteMailRequest(prompt: string): boolean {
   return hasDelete && hasMail;
 }
 
+function extractClassificationOverrideFolder(payload: unknown): string | null {
+  if (!payload || typeof payload !== 'object') {
+    return null;
+  }
+  const candidate = payload as Record<string, unknown>;
+  const raw =
+    candidate.classification_override_folder ??
+    candidate.classificationOverrideFolder ??
+    candidate.auto_classify_override_folder ??
+    candidate.autoClassifyOverrideFolder;
+  if (typeof raw !== 'string') {
+    return null;
+  }
+  const value = raw.trim();
+  return value.length > 0 ? value : null;
+}
+
+function extractClassificationSuggestedFolder(payload: unknown): string | null {
+  if (!payload || typeof payload !== 'object') {
+    return null;
+  }
+  const candidate = payload as Record<string, unknown>;
+  const raw =
+    candidate.classification_suggested_folder ??
+    candidate.classificationSuggestedFolder ??
+    candidate.auto_classify_suggested_folder ??
+    candidate.autoClassifySuggestedFolder;
+  if (typeof raw !== 'string') {
+    return null;
+  }
+  const value = raw.trim();
+  return value.length > 0 ? value : null;
+}
+
+function extractClassificationUserAction(payload: unknown): string | null {
+  if (!payload || typeof payload !== 'object') {
+    return null;
+  }
+  const candidate = payload as Record<string, unknown>;
+  const raw =
+    candidate.classification_user_action ??
+    candidate.classificationUserAction ??
+    candidate.auto_classify_user_action ??
+    candidate.autoClassifyUserAction;
+  if (typeof raw !== 'string') {
+    return null;
+  }
+  const value = raw.trim().toLowerCase();
+  return value.length > 0 ? value : null;
+}
+
 function isMoveMailRequest(prompt: string): boolean {
   const text = prompt.toLowerCase();
   const hasMove = /\b(move)\b/.test(text);
@@ -1994,6 +2045,46 @@ function parseAttachmentExplain(raw: string): AttachmentExplainResult | null {
 
 function normalizeWhitespace(value: string): string {
   return value.replace(/\r/g, '').replace(/[ \t]+\n/g, '\n').trim();
+}
+
+async function logAutoClassification(
+  dbRun: DbRun,
+  args: {
+    emailId: number;
+    prompt: string;
+    sender: string;
+    subject: string;
+    currentFolder: string;
+    suggestedFolder?: string | null;
+    suggestedConfidence?: number | null;
+    suggestedReason?: string | null;
+    suggestedNewSubfolder?: string | null;
+    userAction?: string | null;
+    userOverrideFolder?: string | null;
+    finalFolder?: string | null;
+    status: string;
+  },
+): Promise<void> {
+  await dbRun(
+    `INSERT INTO auto_classification_logs (
+       email_id, prompt, sender, subject, current_folder, suggested_folder,
+       suggested_confidence, suggested_reason, suggested_new_subfolder,
+       user_action, user_override_folder, final_folder, status
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+    args.emailId,
+    args.prompt,
+    args.sender,
+    args.subject,
+    args.currentFolder,
+    args.suggestedFolder ?? null,
+    args.suggestedConfidence ?? null,
+    args.suggestedReason ?? null,
+    args.suggestedNewSubfolder ?? null,
+    args.userAction ?? null,
+    args.userOverrideFolder ?? null,
+    args.finalFolder ?? null,
+    args.status,
+  );
 }
 
 async function loadAutoClassifyFolders(dbAll: DbAll): Promise<Array<{ name: string; path: string }>> {
@@ -4734,6 +4825,104 @@ export function createLlmHandler({
       if (!emailRow?.id) {
         return { success: false, type: 'message', message: `Email ${emailId} was not found.` };
       }
+      const senderValue = String(emailRow?.from_raw || '');
+      const subjectValue = String(emailRow?.subject || '');
+      const currentFolderValue = String(emailRow?.folder_path || '');
+      const userAction = extractClassificationUserAction(payload);
+
+      const overrideFolderRaw = extractClassificationOverrideFolder(payload);
+      if (skipConfirmation && overrideFolderRaw) {
+        const overrideTrimmed = String(overrideFolderRaw).trim();
+        const lowered = overrideTrimmed.toLowerCase();
+        if (['no', 'n', 'cancel'].includes(lowered)) {
+          await logAutoClassification(dbRun, {
+            emailId,
+            prompt,
+            sender: senderValue,
+            subject: subjectValue,
+            currentFolder: currentFolderValue,
+            userAction: userAction || 'cancel',
+            userOverrideFolder: overrideTrimmed,
+            status: 'cancelled',
+          });
+          return { success: true, type: 'message', message: 'Cancelled.' };
+        }
+        let targetFolder = overrideTrimmed;
+        if (!targetFolder.includes('.')) {
+          const leaf = sanitizeSubfolderName(targetFolder);
+          if (!leaf || ['inbox', 'sent'].includes(leaf.toLowerCase())) {
+            return {
+              success: false,
+              type: 'message',
+              message: `Invalid folder "${overrideTrimmed}".`,
+            };
+          }
+          targetFolder = `INBOX.${leaf}`;
+        }
+        if (['inbox', 'inbox.inbox', 'sent', 'inbox.sent'].includes(targetFolder.toLowerCase())) {
+          return {
+            success: false,
+            type: 'message',
+            message: `Folder "${targetFolder}" is not allowed for auto classification.`,
+          };
+        }
+        try {
+          const moveResult = await moveMail({ ids: [emailId], folder: targetFolder });
+          const moved = Number(moveResult?.moved || 0);
+          if (moved <= 0) {
+            await logAutoClassification(dbRun, {
+              emailId,
+              prompt,
+              sender: senderValue,
+              subject: subjectValue,
+              currentFolder: currentFolderValue,
+              userAction: userAction || 'override',
+              userOverrideFolder: overrideTrimmed,
+              finalFolder: targetFolder,
+              status: 'move_failed',
+            });
+            return {
+              success: false,
+              type: 'message',
+              message: `Auto classify could not move email ${emailId} to ${targetFolder}.`,
+            };
+          }
+          await logAutoClassification(dbRun, {
+            emailId,
+            prompt,
+            sender: senderValue,
+            subject: subjectValue,
+            currentFolder: currentFolderValue,
+            userAction: userAction || 'override',
+            userOverrideFolder: overrideTrimmed,
+            finalFolder: targetFolder,
+            status: 'moved_override',
+          });
+          return {
+            success: true,
+            type: 'message',
+            message: `Moved email ${emailId} to "${targetFolder}" (manual folder override).`,
+          };
+        } catch (err: any) {
+          const reason = err?.message ? String(err.message) : 'Unknown error';
+          await logAutoClassification(dbRun, {
+            emailId,
+            prompt,
+            sender: senderValue,
+            subject: subjectValue,
+            currentFolder: currentFolderValue,
+            userAction: userAction || 'override',
+            userOverrideFolder: overrideTrimmed,
+            finalFolder: targetFolder,
+            status: 'error',
+          });
+          return {
+            success: false,
+            type: 'message',
+            message: `Auto classify move failed: ${reason}`,
+          };
+        }
+      }
 
       const folders = await loadAutoClassifyFolders(dbAll);
       const summary = String(emailRow?.ai_summary || '').trim();
@@ -4755,6 +4944,14 @@ export function createLlmHandler({
       const raw = await sendToAssistant(classifyPrompt);
       const decision = raw ? parseAutoClassifyDecision(raw, folders) : null;
       if (!decision) {
+        await logAutoClassification(dbRun, {
+          emailId,
+          prompt,
+          sender: senderValue,
+          subject: subjectValue,
+          currentFolder: currentFolderValue,
+          status: 'llm_failed',
+        });
         return {
           success: false,
           type: 'message',
@@ -4773,9 +4970,26 @@ export function createLlmHandler({
             : 'auto-classified';
       const suggestedPath = `INBOX.${chosenLeaf}`;
       const lowConfidence = decision.confidence < 0.8;
+      const suggestedFolderFromPayload = extractClassificationSuggestedFolder(payload);
       const selectedTarget = hasFolderChoice ? (decision.folder_path as string) : suggestedPath;
+      const selectedTargetFromPayload =
+        skipConfirmation && suggestedFolderFromPayload
+          ? String(suggestedFolderFromPayload).trim()
+          : selectedTarget;
 
       if (!skipConfirmation) {
+        await logAutoClassification(dbRun, {
+          emailId,
+          prompt,
+          sender: senderValue,
+          subject: subjectValue,
+          currentFolder: currentFolderValue,
+          suggestedFolder: selectedTarget,
+          suggestedConfidence: decision.confidence,
+          suggestedReason: decision.reason || null,
+          suggestedNewSubfolder: lowConfidence ? suggestedPath : null,
+          status: 'suggested',
+        });
         const reason = decision.reason ? ` Reason: ${decision.reason}` : '';
         return {
           success: true,
@@ -4789,17 +5003,50 @@ export function createLlmHandler({
         };
       }
 
-      const targetFolder = lowConfidence ? suggestedPath : (decision.folder_path || suggestedPath);
+      const targetFolder =
+        selectedTargetFromPayload && selectedTargetFromPayload.length > 0
+          ? selectedTargetFromPayload
+          : lowConfidence
+            ? suggestedPath
+            : (decision.folder_path || suggestedPath);
       try {
         const moveResult = await moveMail({ ids: [emailId], folder: targetFolder });
         const moved = Number(moveResult?.moved || 0);
         if (moved <= 0) {
+          await logAutoClassification(dbRun, {
+            emailId,
+            prompt,
+            sender: senderValue,
+            subject: subjectValue,
+            currentFolder: currentFolderValue,
+            suggestedFolder: selectedTarget,
+            suggestedConfidence: decision.confidence,
+            suggestedReason: decision.reason || null,
+            suggestedNewSubfolder: lowConfidence ? suggestedPath : null,
+            userAction: userAction || 'yes',
+            finalFolder: targetFolder,
+            status: 'move_failed',
+          });
           return {
             success: false,
             type: 'message',
             message: `Auto classify could not move email ${emailId} to ${targetFolder}.`,
           };
         }
+        await logAutoClassification(dbRun, {
+          emailId,
+          prompt,
+          sender: senderValue,
+          subject: subjectValue,
+          currentFolder: currentFolderValue,
+          suggestedFolder: selectedTarget,
+          suggestedConfidence: decision.confidence,
+          suggestedReason: decision.reason || null,
+          suggestedNewSubfolder: lowConfidence ? suggestedPath : null,
+          userAction: userAction || 'yes',
+          finalFolder: targetFolder,
+          status: lowConfidence ? 'moved_new_subfolder' : 'moved_suggested',
+        });
         const reason = decision.reason ? ` Reason: ${decision.reason}` : '';
         return {
           success: true,
@@ -4810,6 +5057,20 @@ export function createLlmHandler({
         };
       } catch (err: any) {
         const reason = err?.message ? String(err.message) : 'Unknown error';
+        await logAutoClassification(dbRun, {
+          emailId,
+          prompt,
+          sender: senderValue,
+          subject: subjectValue,
+          currentFolder: currentFolderValue,
+          suggestedFolder: selectedTarget,
+          suggestedConfidence: decision.confidence,
+          suggestedReason: decision.reason || null,
+          suggestedNewSubfolder: lowConfidence ? suggestedPath : null,
+          userAction: userAction || 'yes',
+          finalFolder: targetFolder,
+          status: 'error',
+        });
         return {
           success: false,
           type: 'message',

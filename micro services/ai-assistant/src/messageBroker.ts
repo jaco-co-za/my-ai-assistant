@@ -775,6 +775,7 @@ type ConfirmationPayload = {
   requestId?: string;
   prompt?: string;
   payload?: Record<string, unknown>;
+  auto_classify_suggested_folder?: string;
   schedule_from?: string;
   schedule_message?: string;
 };
@@ -848,15 +849,58 @@ async function handleConfirmation(from: string, message: string): Promise<Broker
     }
     return { success: true, code: 200, msg: "Cancelled." };
   }
+  const pendingPayload = JSON.parse(pending.payload) as ConfirmationPayload;
+  const isAutoClassifyConfirm =
+    pending.action === "app-confirm" &&
+    pendingPayload?.payload &&
+    typeof pendingPayload.payload === "object" &&
+    typeof (pendingPayload.payload as Record<string, unknown>).prompt === "string" &&
+    /\bauto\s+(classify|categorize|categorise|sort)\s+(mail|email|message)\b/i.test(
+      String((pendingPayload.payload as Record<string, unknown>).prompt || ""),
+    );
+  if (!isConfirmMessage(message) && !isDeclineMessage(message) && isAutoClassifyConfirm) {
+    const url = (pendingPayload.replyUrl || "").trim();
+    const body =
+      pendingPayload.payload && typeof pendingPayload.payload === "object" ? pendingPayload.payload : null;
+    if (!url || !body) {
+      return { success: false, code: 400, msg: "Unable to confirm request" };
+    }
+    const overrideFolder = message.trim();
+    const confirmBody: Record<string, unknown> = {
+      ...body,
+      skip_confirmation: true,
+      classification_override_folder: overrideFolder,
+      classification_user_action: "override",
+    };
+    if (pendingPayload.auto_classify_suggested_folder) {
+      confirmBody.classification_suggested_folder = pendingPayload.auto_classify_suggested_folder;
+    }
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(confirmBody),
+      });
+      const text = await response.text();
+      return { success: true, code: 200, msg: text };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      return { success: false, code: 503, msg };
+    }
+  }
   if (isConfirmMessage(message)) {
-    const payload = JSON.parse(pending.payload) as ConfirmationPayload;
+    const payload = pendingPayload;
     if (pending.action === "app-confirm") {
       const url = (payload.replyUrl || "").trim();
       const body = payload.payload && typeof payload.payload === "object" ? payload.payload : null;
       if (!url || !body) {
         return { success: false, code: 400, msg: "Unable to confirm request" };
       }
-      const confirmBody = { ...body, skip_confirmation: true };
+      const confirmBody: Record<string, unknown> = { ...body, skip_confirmation: true };
+      if (payload.auto_classify_suggested_folder) {
+        confirmBody.classification_suggested_folder = payload.auto_classify_suggested_folder;
+      }
+      confirmBody.classification_user_action = "yes";
       try {
         const response = await fetch(url, {
           method: "POST",
